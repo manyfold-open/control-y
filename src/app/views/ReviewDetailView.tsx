@@ -275,10 +275,16 @@ export default function ReviewDetailView({
             Pass {failedPass.number} did not complete. {failedPass.error} No issue was changed.
           </div>
         )}
-        {data.retrospective && (
-          <RetrospectivePanel retro={data.retrospective} memory={data.memory} busy={busy} act={act} />
-        )}
       </header>
+
+      {/* Content, not chrome. Inside the header it had no scroll container of
+          its own, and .review is height:100% — so a retrospective longer than
+          the band was simply unreachable. */}
+      {data.retrospective && (
+        <div className="review-retro">
+          <RetrospectivePanel retro={data.retrospective} memory={data.memory} busy={busy} act={act} />
+        </div>
+      )}
 
       <div className="review-toolbar">
         <nav className="segmented" aria-label="Filter issues">
