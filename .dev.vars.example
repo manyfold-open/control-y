@@ -1,0 +1,21 @@
+# Local development overrides. Copy to .dev.vars (git-ignored) and uncomment what you need.
+#
+# Everything here is OPTIONAL — the app deploys and runs with none of it set,
+# which is why the Deploy to Cloudflare button asks you for nothing.
+
+# Relaxes the https-only / no-private-IP checks so you can point at a local agent.
+# ENVIRONMENT=development
+
+# Manyfold API base. Defaults to the value in wrangler.jsonc; use staging for local dev.
+# MANYFOLD_API_BASE_URL=https://api-staging.manyfold.ai
+
+# When set, every API route except /api/health and /api/state requires an
+# `x-admin-password` header. Recommended once your Worker is public:
+#   npx wrangler secret put ADMIN_PASSWORD
+# ADMIN_PASSWORD=
+
+# Encrypts the Manyfold device code and agent tokens stored in D1.
+# If unset, a random key is generated on first use and stored in the same database.
+# Set this (>=32 chars) to keep the key out of the database:
+#   npx wrangler secret put CONFIG_ENCRYPTION_KEY
+# CONFIG_ENCRYPTION_KEY=

@@ -1,0 +1,48 @@
+{
+  "name": "bridge",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Cloudflare Workers starter pre-wired with Manyfold AI-agent connectivity: connect agents, chat to verify, then build your app on top.",
+  "license": "MIT",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc -b && vite build",
+    "check": "tsc -b && vite build && wrangler deploy --dry-run",
+    "test": "vitest run",
+    "deploy": "wrangler deploy",
+    "smoke": "node scripts/smoke.mjs"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "dependencies": {
+    "hono": "^4.13.1",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0"
+  },
+  "devDependencies": {
+    "@cloudflare/vite-plugin": "^1.51.2",
+    "@cloudflare/workers-types": "^5.20260811.1",
+    "@types/node": "^24.0.0",
+    "@types/react": "^19.2.0",
+    "@types/react-dom": "^19.2.0",
+    "@vitejs/plugin-react": "^6.0.5",
+    "typescript": "^5.9.3",
+    "vite": "^8.2.1",
+    "vitest": "^4.1.10",
+    "wrangler": "^4.120.1"
+  },
+  "cloudflare": {
+    "label": "Manyfold Agent Starter",
+    "products": [
+      "Workers",
+      "D1"
+    ],
+    "bindings": {
+      "DB": {
+        "description": "Stores connected agents (tokens encrypted at rest), connect sessions, and chat history. Yours to extend."
+      }
+    }
+  }
+}
