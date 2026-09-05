@@ -5,7 +5,7 @@
      No prefers-color-scheme rule on purpose: on a dark tab strip the ink key
      recedes into it and the white Y carries the mark on its own, which is
      quieter than flipping to a white square and louder than nothing. -->
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 32 32">
   <rect width="32" height="32" rx="8" fill="#0a0a0a"/>
   <g fill="#ffffff" transform="translate(16,16) scale(1.1) translate(-16,-16)">
     <path d="M7.6 7.8 L11.7 7.8 L16 14.4 L14.3 17.01 L14.3 18.08 Z"/>
