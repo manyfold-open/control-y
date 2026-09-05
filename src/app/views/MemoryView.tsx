@@ -2,8 +2,9 @@
  * What the workspace carries between reviews.
  *
  * An entry applies when it is switched on AND in scope on the review being run,
- * so both are controls here — the scope pill toggles against the review the
- * panel would run next.
+ * so both are controls here. The review they are scoped to is named once in the
+ * page header rather than on every row, and each kind's definition is a tooltip
+ * here and a subtitle in the dialog that authors it.
  */
 
 import { useState } from 'react';
@@ -62,10 +63,11 @@ export default function MemoryView({
       <header className="page-head">
         <div>
           <h1 className="page-title">Memory</h1>
-          <p className="page-sub">
-            What the workspace carries between reviews, so the same thing is not re-litigated every period. Written as
-            rules, not notes.
-          </p>
+          {review && (
+            <p className="page-scope" title={`Scope targets on this page apply to ${review.name}`}>
+              <Icon name="scope" size={14} /> {review.name}
+            </p>
+          )}
         </div>
         <button className="button primary" type="button" onClick={() => setEditing('new')}>
           <Icon name="plus" /> New entry
@@ -83,10 +85,9 @@ export default function MemoryView({
         if (group.length === 0) return null;
         return (
           <section key={kind} className="memory-section">
-            <div className="memory-section-head">
-              <h2 className="section-title">{kind}</h2>
-              <p className="section-blurb">{BLURB[kind]}</p>
-            </div>
+            <h2 className="section-title" title={BLURB[kind]}>
+              {kind}
+            </h2>
 
             <div className="table-card">
               {group.map((entry) => {
@@ -104,16 +105,19 @@ export default function MemoryView({
                         {review && (
                           <button
                             type="button"
-                            className={entry.enabled && inScope ? 'memory-scope live' : 'memory-scope'}
+                            aria-pressed={inScope}
+                            aria-label={`${inScope ? 'In' : 'Out of'} scope on ${review.name}`}
+                            className={inScope ? 'scope-toggle on' : 'scope-toggle'}
                             disabled={busy}
-                            title={`Switch this entry ${inScope ? 'out of' : 'into'} scope on ${review.name}`}
+                            title={`${inScope ? 'In' : 'Out of'} scope on ${review.name}. Click to switch.`}
                             onClick={() =>
                               void act(() =>
                                 send('PUT', `/api/reviews/${review.id}/memory/${entry.id}`, { inScope: !inScope }),
                               )
                             }
                           >
-                            {inScope ? 'In scope' : 'Out of scope'} on {review.name}
+                            <Icon name="scope" size={13} />
+                            {inScope ? 'In scope' : 'Out of scope'}
                           </button>
                         )}
                         <button
@@ -138,11 +142,6 @@ export default function MemoryView({
           </section>
         );
       })}
-
-      <p className="page-note">
-        An entry applies when it is switched on <b>and</b> in scope on the review being run. Switching one off and
-        re-running is how you prove what a rule was actually doing.
-      </p>
 
       {editing && (
         <EntryDialog

@@ -62,8 +62,12 @@ export default function ReviewsView({
               </span>
 
               <span className="review-row-panel">
-                {review.agents} agents · {review.documents} docs
-                {review.memoryProduced > 0 && <span className="settled"> · {review.memoryProduced} remembered</span>}
+                <span className="panel-counts">
+                  {review.agents} agents · {review.documents} docs
+                </span>
+                {review.memoryProduced > 0 && (
+                  <span className="settled">{review.memoryProduced} remembered</span>
+                )}
               </span>
 
               <span className="review-row-updated">{formatDay(review.updatedAt)}</span>

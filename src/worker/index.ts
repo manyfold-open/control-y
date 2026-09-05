@@ -14,7 +14,7 @@
  *   DELETE /api/agents/:agentId/messages    admin  reset the conversation
  *   POST   /api/agents/:agentId/chat        admin  one chat turn (text/event-stream)
  *
- * Turn Zero's own routes live in src/worker/routes.ts and mount under /api.
+ * Ctrl+Y's own routes live in src/worker/routes.ts and mount under /api.
  *
  * "admin" routes require the x-admin-password header — but only when the
  * ADMIN_PASSWORD secret is set. Without it the app is open, which is what makes
@@ -38,7 +38,7 @@ import {
 } from './connect';
 import { getConversation, handleChatTurn, resetConversation } from './chat';
 import { ensureSeed } from './seed';
-import { turnZero } from './routes';
+import { ctrlY } from './routes';
 
 const SERVICE = 'cloudflare-worker-starter';
 
@@ -174,8 +174,8 @@ app.post('/api/agents/:agentId/chat', async (c) => {
   });
 });
 
-// Turn Zero: reviews, issues, people, memory, the panel. See routes.ts.
-app.route('/api', turnZero);
+// Ctrl+Y: reviews, issues, people, memory, the panel. See routes.ts.
+app.route('/api', ctrlY);
 
 app.all('/api/*', () => {
   throw new HttpError(404, 'not_found', 'No such API route.');

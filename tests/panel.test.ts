@@ -90,7 +90,11 @@ const carried: Issue = {
   assigneeId: 'p-halvorsen',
   assigneeReason: 'They ran the closing.',
   flags: [],
-  evidence: { label: 'staging.xlsx · row 47', lines: ['amount EUR 632,911.04'] },
+  evidence: {
+    label: 'staging.xlsx · row 47',
+    quote: null,
+    rows: [{ field: 'amount', value: 'EUR 632,911.04', note: null }],
+  },
   memory: null,
   conflict: null,
   draft: 'Hello Sigrid,\n\nWhat is this?\n\nThank you.',

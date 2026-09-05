@@ -122,6 +122,10 @@
 
   --judgment: var(--brand-warn);
   --judgment-wash: color-mix(in srgb, var(--brand-warn) 12%, transparent);
+  /* The amber carries labels and chips — short, bold, often on a wash. At body
+     size on white it lands at 3.4:1 and fails AA, so running prose in this role
+     takes the darkened ink instead: same hue, 4.9:1. */
+  --judgment-ink: color-mix(in srgb, var(--brand-warn) 80%, #000);
 
   --material: var(--brand-error);
   --material-wash: color-mix(in srgb, var(--brand-error) 12%, transparent);
@@ -184,22 +188,32 @@ p { margin: 0; }
   padding: var(--space-xs) var(--space-sm) var(--space-lg);
 }
 
-.rail-mark {
-  display: grid;
-  place-items: center;
-  width: 26px;
-  height: 26px;
-  border-radius: var(--rounded-sm);
-  background: var(--primary);
-  color: var(--on-primary);
-  font-size: 14px;
+/* ── The mark ────────────────────────────────────────────────────────────
+   Ctrl+Y is a key chord, so the wordmark is set in the mono face this system
+   already reserves for identifiers — which also keeps it from reading as one
+   more nav label. The plus drops a step in colour so the two keys read as two
+   keys. Geometry of the glyph itself lives in components/Logo.tsx. */
+
+.logo {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-xs);
 }
 
-.rail-wordmark {
-  font: 600 15px/1.3 var(--font-sans);
-  letter-spacing: -0.2px;
+.logo-mark { display: block; flex: none; }
+.logo-key { fill: var(--primary); }
+.logo-glyph { fill: var(--on-primary); }
+
+.logo-word {
+  /* 500 is the heaviest mono weight DESIGN.md defines, and at 15px it is
+     indistinguishable from 600 — so the wordmark stays inside the spec and the
+     page loads one font weight fewer. */
+  font: 500 15px/1 var(--font-mono);
+  letter-spacing: -0.4px;
   color: var(--ink);
 }
+
+.logo-plus { color: var(--stone); }
 
 .rail-nav { display: grid; gap: 2px; }
 
@@ -287,10 +301,21 @@ p { margin: 0; }
 }
 
 .page-note.tight { margin-top: var(--space-sm); }
+
+/* Names the review the page's counts and toggles belong to. It replaces the
+   same name repeated down every row. */
+.page-scope {
+  display: flex; align-items: center; gap: 6px;
+  margin-top: var(--space-xxs);
+  color: var(--stone); font-size: 13px;
+}
+.page-scope .icon { color: var(--muted-ink); }
 .page-note b { color: var(--steel); font-weight: 600; }
 
 .section-title { font: 600 14px/1.4 var(--font-sans); }
-.section-blurb { margin-top: 2px; color: var(--stone); font-size: 13px; }
+/* A kind's definition is a tooltip here and a subtitle in the dialog that
+   authors it, which is where it is actually needed. */
+h2.section-title[title] { cursor: help; }
 .empty-note { padding: var(--space-xxxl); color: var(--stone); font-size: 14px; text-align: center; }
 
 /* Section label. Sentence case: seven stacked ALL-CAPS labels down one column
@@ -349,9 +374,65 @@ p { margin: 0; }
 
 .button.small { padding: 5px 12px; font-size: 13px; }
 
+/* ── Icon controls ──────────────────────────────────────────────────────────
+   A row action that repeats down a list earns a glyph instead of a word: five
+   rows of "Edit  View prompt" is ten text links competing with the names they
+   sit beside. Every one carries a title and an aria-label, so the word is still
+   there for a screen reader and on hover.
+
+   `.icon-button` acts; it is 30px, matching `.button.icon`. A control that
+   holds a state uses `.scope-toggle` below, which keeps its label. */
+.icon-button {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 30px; height: 30px; padding: 0;
+  border: 1px solid transparent; border-radius: var(--rounded-md);
+  background: transparent; color: var(--stone);
+  cursor: pointer;
+  transition: background var(--motion), color var(--motion);
+}
+
+.icon-button:hover { background: var(--surface); color: var(--ink); }
+.agent-row-controls .icon-button { color: var(--steel); }
+.icon-button:disabled { color: var(--muted-ink); cursor: default; background: transparent; }
+
+/* The chevron is the disclosure, so it turns rather than being relabelled. */
+.icon-button .icon { transition: transform var(--motion); }
+.icon-button.open .icon { transform: rotate(180deg); }
+
+/* Scope is the one row control a glyph alone could not carry: a target says
+   "aimed at something" but not at what, and colour alone cannot be the state.
+   So it keeps the icon and adds the state in two words. The review it is aimed
+   at is named once in the page header, which is what the old label repeated on
+   every row. Settled already means "memory applied" in the role layer, so the
+   on state needs no new colour. */
+.scope-toggle {
+  display: inline-flex; align-items: center; gap: 5px;
+  height: 26px; padding: 0 10px;
+  border: 1px solid var(--hairline); border-radius: var(--rounded-full);
+  background: transparent; color: var(--steel);
+  font: 400 12px/1 var(--font-sans); white-space: nowrap; cursor: pointer;
+  transition: background var(--motion), border-color var(--motion), color var(--motion);
+}
+
+/* The glyph carries the state colour, the label stays a legible neutral.
+   --settled on white measures 3.1:1, under the 4.5:1 floor for 12px text, and a
+   control's own label is the last place to spend contrast. */
+.scope-toggle .icon { color: var(--muted-ink); transition: color var(--motion); }
+.scope-toggle:hover { border-color: var(--stone); color: var(--ink); }
+.scope-toggle:disabled { color: var(--muted-ink); border-color: var(--hairline); cursor: default; }
+
+.scope-toggle.on {
+  border-color: color-mix(in srgb, var(--settled) 32%, transparent);
+  background: var(--settled-wash);
+  color: var(--charcoal);
+}
+.scope-toggle.on .icon { color: var(--settled); }
+.scope-toggle.on:hover { border-color: var(--settled); color: var(--ink); }
+
 .button.icon { width: 30px; height: 30px; padding: 0; justify-content: center; }
 
-.button:focus-visible, .rail-item:focus-visible, .segment:focus-visible,
+.button:focus-visible, .icon-button:focus-visible, .scope-toggle:focus-visible,
+.rail-item:focus-visible, .segment:focus-visible,
 .issue-row:focus-visible, .review-row:focus-visible, .switch:focus-visible,
 .crumb:focus-visible, .link-issue:focus-visible {
   outline: 2px solid var(--focus);
@@ -415,12 +496,15 @@ p { margin: 0; }
   width: 36px; height: 20px; flex: none;
   padding: 0; border: 0;
   border-radius: var(--rounded-full);
-  background: var(--hairline);
+  background: var(--muted-ink);
   cursor: pointer;
   transition: background var(--motion);
 }
 
+.switch:hover { background: var(--stone); }
 .switch.on { background: var(--primary); }
+.switch.on:hover { background: var(--charcoal); }
+.switch:disabled { background: var(--hairline); cursor: default; }
 
 .switch-thumb {
   position: absolute; top: 2px; left: 2px;
@@ -448,7 +532,7 @@ p { margin: 0; }
 .review-row,
 .people-row {
   display: grid;
-  grid-template-columns: minmax(0, 2fr) 148px minmax(0, 1.35fr) 84px;
+  grid-template-columns: minmax(0, 1fr) 152px 148px 92px;
   align-items: center;
   gap: var(--space-md);
   padding: var(--space-sm) var(--space-lg);
@@ -489,8 +573,29 @@ p { margin: 0; }
 }
 
 .review-row-meta { color: var(--stone); font-size: 13px; }
+
+/* The row already reads as two lines — title over counterparty. The two middle
+   columns take the same shape rather than compressing a whole phrase into one
+   line: the figure sits on the title line, its qualifier underneath. A fifth
+   pass or a longer status then lengthens the column instead of squeezing it. */
+.review-row-convergence .convergence,
+.review-row-panel {
+  display: grid;
+  justify-items: start;
+  gap: 3px;
+  min-width: 0;
+}
+
+.review-row-convergence .cv-unit { margin-left: 0; }
+
+/* An unusually long history wraps onto a second line rather than spilling into
+   the Panel column. Each prior stays glued to its arrow, so a break only ever
+   falls between passes. */
+.review-row-convergence .cv-figures { flex-wrap: wrap; white-space: normal; }
 .review-row-panel { color: var(--stone); font-size: 13px; }
 .review-row-panel .settled { color: var(--settled); }
+.review-row-panel .panel-counts,
+.review-row-panel .settled { white-space: nowrap; }
 .review-row-updated { color: var(--stone); font-size: 13px; text-align: right; }
 
 .people-row {
@@ -521,11 +626,12 @@ p { margin: 0; }
   font-variant-numeric: tabular-nums;
 }
 
-.cv-prior { color: var(--muted-ink); font: 400 13px/1.4 var(--font-mono); }
+.cv-figures { display: inline-flex; align-items: baseline; white-space: nowrap; }
+.cv-prior { color: var(--muted-ink); font: 400 13px/1.4 var(--font-mono); white-space: nowrap; }
 .cv-sep { padding: 0 5px; color: var(--muted-ink); }
 .cv-last { font: 500 17px/1.2 var(--font-mono); color: var(--ink); }
 .cv-last.landed { color: var(--settled); }
-.cv-unit { margin-left: 6px; color: var(--stone); font: 400 12px/1.4 var(--font-sans); }
+.cv-unit { margin-left: 6px; color: var(--stone); font: 400 12px/1.4 var(--font-sans); white-space: nowrap; }
 
 /* ═══ Review detail ═════════════════════════════════════════════════════════
    Full-height triage surface: one header band, then two independently scrolling
@@ -769,7 +875,7 @@ p { margin: 0; }
 .conflict-position { color: var(--slate); }
 .conflict-agent { display: block; color: var(--ink); font: 400 12px/1.5 var(--font-mono); }
 
-/* ═══ Code ══════════════════════════════════════════════════════════════════ */
+/* ═══ Code & evidence ═══════════════════════════════════════════════════════ */
 
 code {
   background: var(--surface);
@@ -779,39 +885,110 @@ code {
   color: var(--charcoal);
 }
 
-.code-block {
-  border-radius: var(--rounded-md);
+/* Mintlify's dark `code-block` is deliberately not used here. It earns its
+   weight in the docs from syntax highlighting — colour hierarchy on a dark
+   ground — and from repeating every few screens. This app quotes ledgers, not
+   programs, has no highlighting to carry, and would place exactly one black
+   slab in an otherwise light column, where it outranks the finding it is only
+   meant to support. `--surface-code` and `--hairline-dark` stay in the token
+   layer unreferenced, as DESIGN.md defines them and real code may yet want
+   them — the same reason `--testimonial-orange` is kept above. */
+
+/* An excerpt of the deliverable, framed like the draft it sits beside: white
+   page, hairline, one soft bar carrying the source and the copy. The contrast
+   budget is spent INSIDE the block rather than on its background.
+
+   Two kinds of proof live in here and they are set differently, because they
+   are different things. A passage out of a letter is prose and wraps as prose.
+   A record out of a sheet is columns, and the columns are laid out here — the
+   panel reports field, value and note as three facts, so nothing depends on
+   spaces a model typed. */
+
+.evidence {
+  margin: 0;
+  border: 1px solid var(--hairline);
+  border-radius: var(--rounded-lg);
   overflow: hidden;
-  background: var(--surface-code);
-  border: 1px solid var(--hairline-dark);
+  background: var(--canvas);
+  /* The record answers to the width of this block, not of the window: the
+     detail pane is one of two columns above 940px and the whole screen below
+     it, so a viewport breakpoint would fire at the wrong moments. */
+  container-type: inline-size;
 }
 
-.code-block-header {
+.evidence-source {
   display: flex; align-items: center; justify-content: space-between; gap: var(--space-md);
-  padding: var(--space-xs) var(--space-md);
-  border-bottom: 1px solid var(--hairline-dark);
-  color: var(--on-dark-muted);
-  font: 400 12px/1.4 var(--font-sans);
+  padding: var(--space-xxs) var(--space-xxs) var(--space-xxs) var(--space-md);
+  border-bottom: 1px solid var(--hairline-soft);
+  background: var(--surface-soft);
 }
 
-.code-block pre {
-  margin: 0; padding: var(--space-md);
-  overflow-x: auto;
-  color: var(--on-dark);
-  font: 400 13px/1.6 var(--font-mono);
+/* A pointer into a file is an identifier, so it takes the mono. */
+.evidence-locator {
+  min-width: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  color: var(--steel);
+  font: 400 12px/1.4 var(--font-mono);
 }
 
-.code-block code { background: none; padding: 0; font: inherit; color: inherit; }
-
-.copy-code-button {
-  background: transparent; color: var(--on-dark-muted);
-  border: 1px solid var(--hairline-dark);
-  border-radius: var(--rounded-sm);
-  padding: 2px 8px;
-  font: 400 12px/1.4 var(--font-sans);
-  cursor: pointer;
+/* A clause from a side letter is a sentence. Mono and a hard line break would
+   make it read like a config file, which is how the panel would be misread. */
+.evidence-quote {
+  margin: 0;
+  padding: var(--space-md);
+  quotes: '\201C' '\201D';
+  color: var(--charcoal);
+  font: 400 14px/1.6 var(--font-sans);
 }
-.copy-code-button:hover { color: var(--on-dark); }
+
+.evidence-quote::before { content: open-quote; }
+.evidence-quote::after { content: close-quote; }
+.evidence-quote + .evidence-record { border-top: 1px solid var(--hairline-soft); }
+
+/* Three voices, three treatments. What the panel calls the line is sans and
+   recedes; what the document literally says is mono, because the mono IS the
+   claim of verbatim quotation — and figures want the tabular numerals anyway;
+   what the panel found is the panel writing in the margin, so it is the only
+   part that takes a colour.
+
+   Judgment amber, never --material: an unresolved reference or a figure running
+   the wrong way is the machine saying it cannot settle this. Severity is the
+   chip at the top of the pane, and red stays there. */
+
+.evidence-record {
+  display: grid;
+  grid-template-columns: minmax(0, max-content) minmax(0, max-content) minmax(0, 1fr);
+  align-items: baseline;
+  gap: var(--space-xxs) var(--space-lg);
+  margin: 0;
+  padding: var(--space-md);
+}
+
+.evidence-row { display: contents; }
+
+.evidence-field { color: var(--steel); font: 400 13px/1.5 var(--font-sans); }
+
+.evidence-value {
+  margin: 0;
+  color: var(--charcoal);
+  font: 400 13px/1.5 var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+.evidence-note { margin: 0; color: var(--judgment-ink); font: 400 13px/1.5 var(--font-sans); }
+
+/* Stacked once three columns stop fitting — a note wrapping inside 120px is
+   four words a line, and at a 4px row gap the rows stop being rows. Stacking
+   needs the rule back between them to say where each one ends. */
+@container (max-width: 520px) {
+  .evidence-record { grid-template-columns: minmax(0, 1fr); gap: 0; }
+  .evidence-row { display: grid; gap: 2px; padding: var(--space-xs) 0; }
+  .evidence-row:first-child { padding-top: 0; }
+  .evidence-row:last-child { padding-bottom: 0; }
+  .evidence-row + .evidence-row { border-top: 1px solid var(--hairline-soft); }
+  .evidence-note:empty { display: none; }
+}
+
 
 .prompt-box {
   margin: var(--space-sm) 0 0;
@@ -916,7 +1093,7 @@ code {
    five on Agents made two config screens louder than the triage screen. */
 
 .memory-section { margin-bottom: var(--space-xl); }
-.memory-section-head { margin-bottom: var(--space-xs); }
+.memory-section > .section-title, .consolidator > .section-title { margin-bottom: var(--space-xs); }
 
 .memory-row, .agent-row {
   display: grid; gap: var(--space-xs);
@@ -926,7 +1103,13 @@ code {
 }
 
 .memory-row:last-child, .agent-row:last-child { border-bottom: 0; }
-.memory-row.off, .agent-row.off { opacity: 0.55; }
+/* Switched off means inactive, not unavailable. Only the content recedes, so
+   the row still reads as settled-aside at a glance; the controls keep full
+   strength, because dimming a live control is exactly how an interface says
+   "disabled" and these two are the way back on. */
+.memory-row.off .memory-text,
+.memory-row.off .memory-source,
+.agent-row.off .agent-row-main { opacity: 0.5; }
 
 .memory-text {
   display: block; width: 100%; text-align: left;
@@ -937,14 +1120,20 @@ code {
 .memory-foot { display: flex; align-items: center; justify-content: space-between; gap: var(--space-md); flex-wrap: wrap; }
 .memory-source { color: var(--stone); font-size: 12px; }
 .memory-switches { display: flex; align-items: center; gap: var(--space-sm); }
-.memory-scope {
-  background: none; border: 0; padding: 0; cursor: pointer;
-  color: var(--stone); font: 400 12px/1.4 var(--font-sans);
-}
-.memory-scope:hover { color: var(--steel); }
-.memory-scope.live { color: var(--settled); }
 
-.agent-row-head { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--space-md); }
+/* Content left, every control in one cluster right. Splitting the switch off
+   from the other two put a row of dead space between them and made the eye
+   travel the full width twice. */
+.agent-row {
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
+  column-gap: var(--space-lg);
+}
+
+.agent-row-main { display: grid; gap: 4px; min-width: 0; }
+.agent-row-controls { display: flex; align-items: center; gap: 2px; }
+.agent-row-controls .switch { margin-left: var(--space-xs); }
+.agent-row .prompt-box { grid-column: 1 / -1; }
 
 .agent-name {
   display: flex; align-items: center; gap: var(--space-xs); flex-wrap: wrap;
@@ -953,11 +1142,7 @@ code {
 
 .agent-purpose { margin-top: 3px; max-width: 66ch; color: var(--steel); font-size: 13px; line-height: 1.55; }
 
-.agent-row-foot {
-  display: flex; align-items: center; justify-content: space-between; gap: var(--space-md);
-}
-
-.agent-last { color: var(--stone); font-size: 13px; }
+.agent-last { margin-top: 2px; color: var(--stone); font-size: 13px; }
 .agent-last b { color: var(--ink); font-weight: 500; font-family: var(--font-mono); font-size: 13px; }
 .agent-last b.nothing { color: var(--muted-ink); font-weight: 400; }
 
@@ -1109,7 +1294,6 @@ input:focus-visible, textarea:focus-visible, select:focus-visible {
 .doc-size { color: var(--stone); font: 400 12px/1.4 var(--font-mono); }
 .doc-add { display: grid; gap: var(--space-sm); margin-top: var(--space-sm); }
 
-.agent-where { color: var(--muted-ink); }
 
 /* ═══ Responsive ════════════════════════════════════════════════════════════ */
 
@@ -1120,7 +1304,7 @@ input:focus-visible, textarea:focus-visible, select:focus-visible {
 @media (max-width: 940px) {
   .app { grid-template-columns: 64px minmax(0, 1fr); }
   .rail { padding: var(--space-md) var(--space-xs); }
-  .rail-wordmark, .rail-label, .rail-identity, .rail-count { display: none; }
+  .logo-word, .rail-label, .rail-identity, .rail-count { display: none; }
   .rail-item { justify-content: center; padding: var(--space-xs); }
   .rail-brand { justify-content: center; padding: var(--space-xxs) 0 var(--space-md); }
   .rail-foot { justify-content: center; }
@@ -1131,7 +1315,9 @@ input:focus-visible, textarea:focus-visible, select:focus-visible {
   .issue-detail { padding-inline: var(--space-lg); }
 
   .page { padding: var(--space-xl) var(--space-lg) var(--space-section); }
-  .page-head { flex-direction: column; align-items: stretch; gap: var(--space-md); }
+  /* Stack the title above its action, but the action keeps its own width. A
+     full-bleed primary button reads as a banner, not a control. */
+  .page-head { flex-direction: column; align-items: flex-start; gap: var(--space-md); }
   .review-head { padding: var(--space-md) var(--space-lg) var(--space-xs); }
 
   /* The title and its two actions stop fitting one line: stack them rather than

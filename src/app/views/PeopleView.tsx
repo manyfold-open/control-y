@@ -36,10 +36,11 @@ export default function PeopleView({
       <header className="page-head">
         <div>
           <h1 className="page-title">People</h1>
-          <p className="page-sub">
-            Assignment uses the review title, not the directory role. Who can answer a question is a fact about this
-            period’s work, not about the person in general.
-          </p>
+          {review && (
+            <p className="page-scope" title="Titles and open counts below are for this review">
+              <Icon name="reviews" size={14} /> {review.name}
+            </p>
+          )}
         </div>
         <button className="button primary" type="button" onClick={() => setEditing('new')}>
           <Icon name="plus" /> Add people
@@ -53,7 +54,7 @@ export default function PeopleView({
           <div className="table-head people">
             <span>Person</span>
             <span>Directory role</span>
-            <span>{review ? `Title on ${review.name}` : 'Title on this review'}</span>
+            <span>Review title</span>
             <span>Open</span>
           </div>
 
@@ -80,10 +81,7 @@ export default function PeopleView({
         </div>
       )}
 
-      <p className="page-note">
-        Counterparty staff and external counsel never sign in. They appear here so an issue can be addressed to one of
-        them, and everything they see leaves as pasted text.
-      </p>
+      <p className="page-note">Nobody here signs in. They receive letters, as pasted text.</p>
 
       {editing && (
         <PersonDialog

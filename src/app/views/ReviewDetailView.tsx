@@ -24,6 +24,7 @@ import type {
 import { composeLetter } from '../../shared/letter';
 import { send } from '../api';
 import { errorText, formatBytes, formatWhen, initials, useCopy, usePoll, useResource, type CopyLabel } from '../lib';
+import { evidenceText } from '../../shared/evidence';
 import Convergence from '../components/Convergence';
 import Icon from '../components/Icon';
 import Modal, { Field } from '../components/Modal';
@@ -493,21 +494,36 @@ function IssueDetail({
       {issue.evidence && (
         <section className="detail-section">
           <h3 className="detail-label">Evidence</h3>
-          <div className="code-block">
-            <div className="code-block-header">
-              <span>{issue.evidence.label}</span>
+          <figure className="evidence">
+            <figcaption className="evidence-source">
+              <span className="evidence-locator" title={issue.evidence.label}>
+                {issue.evidence.label}
+              </span>
               <button
-                className="copy-code-button"
+                className="button small"
                 type="button"
-                onClick={() => copy(`evidence-${issue.id}`, issue.evidence!.lines.join('\n'))}
+                onClick={() => copy(`evidence-${issue.id}`, evidenceText(issue.evidence!))}
               >
-                {copyLabel(`evidence-${issue.id}`, 'Copy')}
+                <Icon name="copy" /> {copyLabel(`evidence-${issue.id}`, 'Copy')}
               </button>
-            </div>
-            <pre>
-              <code>{issue.evidence.lines.join('\n')}</code>
-            </pre>
-          </div>
+            </figcaption>
+
+            {issue.evidence.quote && <blockquote className="evidence-quote">{issue.evidence.quote}</blockquote>}
+
+            {issue.evidence.rows.length > 0 && (
+              <dl className="evidence-record">
+                {issue.evidence.rows.map((row, index) => (
+                  /* Every row contributes all three cells, empty note included,
+                     so the columns stay in step down the whole record. */
+                  <div key={index} className="evidence-row">
+                    <dt className="evidence-field">{row.field}</dt>
+                    <dd className="evidence-value">{row.value}</dd>
+                    <dd className="evidence-note">{row.note}</dd>
+                  </div>
+                ))}
+              </dl>
+            )}
+          </figure>
         </section>
       )}
 

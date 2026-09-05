@@ -40,9 +40,28 @@ export default function AgentsView({
     }
   };
 
-  const promptToggle = (key: string) => (
-    <button className="button ghost small" type="button" onClick={() => setOpenKey(openKey === key ? null : key)}>
-      {openKey === key ? 'Hide prompt' : 'View prompt'}
+  const editButton = (agent: PanelAgent) => (
+    <button
+      className="icon-button"
+      type="button"
+      title="Edit"
+      aria-label={`Edit ${agent.name}`}
+      onClick={() => setEditing(agent)}
+    >
+      <Icon name="edit" />
+    </button>
+  );
+
+  const promptToggle = (key: string, name: string) => (
+    <button
+      className={openKey === key ? 'icon-button open' : 'icon-button'}
+      type="button"
+      title="Prompt"
+      aria-expanded={openKey === key}
+      aria-label={`${openKey === key ? 'Hide' : 'Show'} the prompt for ${name}`}
+      onClick={() => setOpenKey(openKey === key ? null : key)}
+    >
+      <Icon name="chevron" />
     </button>
   );
 
@@ -51,10 +70,11 @@ export default function AgentsView({
       <header className="page-head">
         <div>
           <h1 className="page-title">Agents</h1>
-          <p className="page-sub">
-            A review is not one model call. Each agent has a different job, so each gets its own prompt and reports its
-            own count — including zero.
-          </p>
+          {workspace?.lastPass && (
+            <p className="page-scope" title="Every count below is from this pass">
+              <Icon name="reviews" size={14} /> Last pass · {workspace.lastPass.reviewName}
+            </p>
+          )}
         </div>
         <button className="button primary" type="button" onClick={() => setEditing('new')}>
           <Icon name="plus" /> Add agent
@@ -66,8 +86,7 @@ export default function AgentsView({
 
       {workspace && !workspace.panelReady && (
         <div className="notice">
-          No Manyfold agent is connected, so a pass cannot run. Connect one under <b>Connections</b> — the prompts below
-          run on it.
+          No agent connected, so a pass cannot run. Connect one under <b>Connections</b>.
         </div>
       )}
 
@@ -75,15 +94,19 @@ export default function AgentsView({
         <div className="table-card">
           {workspace.panelAgents.map((agent) => (
             <article key={agent.key} className={agent.enabled ? 'agent-row' : 'agent-row off'}>
-              <header className="agent-row-head">
-                <div>
-                  <h2 className="agent-name">
-                    {agent.name}
-                    {!agent.builtin && <span className="chip">yours</span>}
-                    {agent.modified && <span className="chip">modified</span>}
-                  </h2>
-                  {agent.purpose && <p className="agent-purpose">{agent.purpose}</p>}
-                </div>
+              <div className="agent-row-main">
+                <h2 className="agent-name">
+                  {agent.name}
+                  {!agent.builtin && <span className="chip">yours</span>}
+                  {agent.modified && <span className="chip">modified</span>}
+                </h2>
+                {agent.purpose && <p className="agent-purpose">{agent.purpose}</p>}
+                <span className="agent-last">{lastResult(workspace, agent)}</span>
+              </div>
+
+              <div className="agent-row-controls">
+                {editButton(agent)}
+                {promptToggle(agent.key, agent.name)}
                 <button
                   type="button"
                   role="switch"
@@ -95,16 +118,6 @@ export default function AgentsView({
                 >
                   <span className="switch-thumb" />
                 </button>
-              </header>
-
-              <div className="agent-row-foot">
-                <span className="agent-last">{lastResult(workspace, agent)}</span>
-                <span className="row">
-                  <button className="button ghost small" type="button" onClick={() => setEditing(agent)}>
-                    Edit
-                  </button>
-                  {promptToggle(agent.key)}
-                </span>
               </div>
 
               {openKey === agent.key && <pre className="prompt-box">{agent.prompt}</pre>}
@@ -115,24 +128,16 @@ export default function AgentsView({
 
       {workspace && (
         <section className="consolidator">
-          <div className="memory-section-head">
-            <h2 className="section-title">{workspace.consolidator.name}</h2>
-            <p className="section-blurb">{workspace.consolidator.purpose}</p>
-          </div>
+          <h2 className="section-title">{workspace.consolidator.name}</h2>
 
           <div className="table-card">
             <article className="agent-row">
-              <div className="agent-row-foot">
-                <span className="agent-last">
-                  Tie-break rules live in this prompt, not in configuration switches. You can override any individual
-                  ruling anyway.
-                </span>
-                <span className="row">
-                  <button className="button ghost small" type="button" onClick={() => setEditing(workspace.consolidator)}>
-                    Edit
-                  </button>
-                  {promptToggle('consolidator')}
-                </span>
+              <div className="agent-row-main">
+                <p className="agent-purpose">{workspace.consolidator.purpose}</p>
+              </div>
+              <div className="agent-row-controls">
+                {editButton(workspace.consolidator)}
+                {promptToggle('consolidator', workspace.consolidator.name)}
               </div>
               {openKey === 'consolidator' && <pre className="prompt-box">{workspace.consolidator.prompt}</pre>}
             </article>
@@ -152,31 +157,18 @@ export default function AgentsView({
   );
 }
 
-/** What this agent reported on the most recent completed pass, on any review. */
+/** What this agent reported on the most recent completed pass. The pass it came
+ *  from is named once in the page header, so the row carries only the count. */
 function lastResult(workspace: Workspace, agent: PanelAgent): React.ReactNode {
-  if (!agent.enabled) return 'Switched off. It will not run on the next pass.';
+  if (!agent.enabled) return 'Switched off';
   const pass = workspace.lastPass;
   const result = pass?.agents.find((entry) => entry.key === agent.key);
-  if (!pass || !result) return 'Has not run yet.';
-  const where = <span className="agent-where"> on {pass.reviewName}</span>;
-  if (result.error) {
-    return (
-      <>
-        Last pass: <b className="nothing">did not answer</b>
-        {where}
-      </>
-    );
-  }
-  return (
-    <>
-      Last pass:{' '}
-      {result.findings === 0 ? (
-        <b className="nothing">nothing found</b>
-      ) : (
-        <b>{result.findings} findings</b>
-      )}
-      {where}
-    </>
+  if (!pass || !result) return 'Not run yet';
+  if (result.error) return <b className="nothing">did not answer</b>;
+  return result.findings === 0 ? (
+    <b className="nothing">nothing found</b>
+  ) : (
+    <b>{result.findings} findings</b>
   );
 }
 

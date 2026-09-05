@@ -15,6 +15,12 @@ const paths: Record<string, string> = {
   inbox: 'M3 11h4l1 2h4l1-2h4 M3 11 5 4h10l2 7v5H3z',
   filter: 'M3 5h14 M6 10h8 M8.5 15h3',
   dot: 'M10 10h.01',
+  /* Disclosure. Rotated by CSS when its section is open, so one glyph carries
+     both states. */
+  chevron: 'M5.5 8 10 12.5 14.5 8',
+  edit: 'M13.7 3.8a1.7 1.7 0 0 1 2.4 2.4l-9 9-3.3.9.9-3.3z M12.5 5l2.5 2.5',
+  /* A target, for whether an entry is aimed at the review being run. */
+  scope: 'M10 16.5a6.5 6.5 0 1 0 0-13 6.5 6.5 0 0 0 0 13z M10 12.5a2.5 2.5 0 1 0 0-5 2.5 2.5 0 0 0 0 5z',
 };
 
 export default function Icon({ name, size = 16 }: { name: keyof typeof paths | string; size?: number }) {

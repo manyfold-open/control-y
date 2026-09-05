@@ -76,7 +76,7 @@ export interface ApiErrorBody {
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
-   Turn Zero domain.
+   Ctrl+Y domain.
 
    Everything below is served by the Worker from D1 and rendered by the SPA.
    Dates are ISO strings; the browser does the formatting.
@@ -139,9 +139,30 @@ export interface ReviewDocument {
   createdAt: string;
 }
 
+/**
+ * One line of a record quoted out of the deliverable: what the field is called,
+ * what it holds as written, and what the panel found wrong with it — separate
+ * fields, because they are three different voices and only the value is the
+ * document's own.
+ */
+export interface EvidenceRow {
+  field: string;
+  value: string;
+  note: string | null;
+}
+
+/**
+ * The excerpt that proves an issue, and where it came from. A passage quoted
+ * from a document, a record read out of a sheet, or both — a side letter is
+ * quoted and then set against the figure actually used.
+ *
+ * Not a block of pre-aligned text: columns are laid out by the renderer, so the
+ * panel states what it found instead of typesetting it with spaces.
+ */
 export interface Evidence {
   label: string;
-  lines: string[];
+  quote: string | null;
+  rows: EvidenceRow[];
 }
 
 export interface Conflict {

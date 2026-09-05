@@ -10,6 +10,7 @@
  * INSERT OR IGNORE so a torn first request cannot produce duplicates.
  */
 
+import type { Evidence } from '../shared/types';
 import type { Env } from './types';
 import { getSetting, now, setSetting } from './db';
 
@@ -258,7 +259,7 @@ interface SeedIssue {
   assignee: string;
   reason: string;
   flags?: string[];
-  evidence?: { label: string; lines: string[] };
+  evidence?: Evidence;
   memory?: { entryId: string; effect: string };
   conflict?: { positions: { agent: string; verdict: string }[]; ruling: string };
   draft?: string;
@@ -278,14 +279,15 @@ const ISSUES: SeedIssue[] = [
     reason: 'The review roster records that they ran the Sardonyx closing.',
     evidence: {
       label: 'staging.xlsx · row 47',
-      lines: [
-        'date          2026-03-27',
-        'narrative     SARDONYX CLOSING',
-        'amount        EUR  632,911.04',
-        'counterparty  (blank)         -> no match on counterparty master',
-        'project       (blank)         -> no match on project master',
-        'position      (blank)         -> no open position on 2026-03-27',
-        'status        Review',
+      quote: null,
+      rows: [
+        { field: 'date', value: '2026-03-27', note: null },
+        { field: 'narrative', value: 'SARDONYX CLOSING', note: null },
+        { field: 'amount', value: 'EUR 632,911.04', note: null },
+        { field: 'counterparty', value: '(blank)', note: 'no match on the counterparty master' },
+        { field: 'project', value: '(blank)', note: 'no match on the project master' },
+        { field: 'position', value: '(blank)', note: 'no open position on 2026-03-27' },
+        { field: 'status', value: 'Review', note: null },
       ],
     },
     draft:
@@ -304,13 +306,16 @@ const ISSUES: SeedIssue[] = [
     flags: ['contradicts'],
     evidence: {
       label: 'recon.xlsx · rows 88–90',
-      lines: [
-        'Statement balance          DKK  2,041,118.22',
-        'Workbook balance           DKK  2,041,252.73',
-        'Difference                 DKK       +134.51   <- workbook is HIGHER',
-        '',
-        'Note: "charge posted after cut-off"',
-        '      a late charge would make this NEGATIVE, not positive',
+      quote: null,
+      rows: [
+        { field: 'Statement balance', value: 'DKK 2,041,118.22', note: null },
+        { field: 'Workbook balance', value: 'DKK 2,041,252.73', note: null },
+        { field: 'Difference', value: 'DKK +134.51', note: 'the workbook is the higher of the two' },
+        {
+          field: 'Note on the break',
+          value: '"charge posted after cut-off"',
+          note: 'a late charge would make this negative, not positive',
+        },
       ],
     },
     draft:
@@ -330,10 +335,18 @@ const ISSUES: SeedIssue[] = [
     flags: ['contradicts'],
     evidence: {
       label: 'Counsel letter · 2 April 2026 · §3',
-      lines: [
-        'Contractual rate, 27 March 2026     1.0389605  (EUR/DKK, per SPA sch. 4)',
-        'Journal batch, 27 March 2026       booked as internal transfer',
-        '                                   rate field: (blank)',
+      quote: null,
+      rows: [
+        {
+          field: 'Contractual rate, 27 March 2026',
+          value: '1.0389605 EUR/DKK, per SPA schedule 4',
+          note: null,
+        },
+        {
+          field: 'Journal batch, 27 March 2026',
+          value: 'booked as an internal transfer',
+          note: 'the rate field is blank',
+        },
       ],
     },
   },
@@ -391,11 +404,11 @@ const ISSUES: SeedIssue[] = [
     reason: 'They advised on the side letter amendment.',
     evidence: {
       label: 'Fenwick side letter · 11 Sept 2025 · §4.2',
-      lines: [
-        '"...the Management Fee payable by the Investor shall not exceed',
-        ' one and one quarter per cent (1.25%) per annum of Commitments."',
-        '',
-        'Q1 2026 accrual                    1.50%  per annum',
+      quote:
+        '…the Management Fee payable by the Investor shall not exceed one and one quarter per cent (1.25%) per annum of Commitments.',
+      rows: [
+        { field: 'Cap, per §4.2', value: '1.25% per annum', note: null },
+        { field: 'Q1 2026 accrual', value: '1.50% per annum', note: 'struck 25 bps above the cap' },
       ],
     },
   },

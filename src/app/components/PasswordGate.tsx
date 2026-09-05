@@ -6,6 +6,7 @@
 
 import { useState } from 'react';
 import { setStoredPassword } from '../api';
+import Logo from './Logo';
 
 export default function PasswordGate(props: { onSubmitted: () => Promise<void> }) {
   const [value, setValue] = useState('');
@@ -24,6 +25,7 @@ export default function PasswordGate(props: { onSubmitted: () => Promise<void> }
   return (
     <div className="overlay">
       <form className="dialog" onSubmit={(event) => void submit(event)}>
+        <Logo size={28} />
         <h2>Admin password required</h2>
         <p className="muted">
           This deployment is locked with the <code>ADMIN_PASSWORD</code> secret. Enter it to
