@@ -11,6 +11,17 @@
   "name": "control-y",
   "main": "./src/worker/index.ts",
   "compatibility_date": "2026-08-01",
+  // Custom domain. Cloudflare creates/maintains the DNS record for this hostname
+  // on deploy. Declaring any route makes wrangler default `workers_dev` to false,
+  // so control-y.netmind-ai.workers.dev stops serving — pinned explicitly below
+  // so that stays a decision rather than an implicit default.
+  "routes": [
+    {
+      "pattern": "ctrl-y.manyfold.ai",
+      "custom_domain": true
+    }
+  ],
+  "workers_dev": false,
   "observability": {
     "enabled": true
   },
