@@ -121,8 +121,13 @@ Manyfold A2A (message/stream, tasks/get)   ← per-agent bearer token, decrypted
 | `src/worker/chat.ts` | One chat turn: agent SSE in, app SSE out, D1 persistence |
 | `src/worker/crypto.ts` | AES-GCM seal/unseal, constant-time compare |
 | `src/worker/db.ts` | Schema (runtime-applied) and settings store |
+| `src/worker/routes.ts` | Turn Zero's API: reviews, issues, people, memory, the panel |
+| `src/worker/store.ts` | Every D1 read and write behind those routes |
+| `src/worker/panel.ts` | Running a pass: each agent, then the consolidator |
+| `src/worker/seed.ts` | First-run content — one open review and two closed ones |
 | `src/shared/types.ts` | API types shared by worker and browser |
-| `src/app/` | React app: chat + settings tabs, connect panel, password gate |
+| `src/shared/letter.ts` | Composing the text that leaves the product |
+| `src/app/` | React app: the workspace screens, plus the inherited chat and settings |
 
 ## Extending it
 

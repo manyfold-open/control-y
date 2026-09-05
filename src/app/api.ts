@@ -63,3 +63,11 @@ export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
   }
   return (await response.json()) as T;
 }
+
+/** POST / PATCH / PUT / DELETE against our own API. GETs use `api` directly. */
+export function send<T>(method: 'POST' | 'PATCH' | 'PUT' | 'DELETE', path: string, body?: unknown): Promise<T> {
+  return api<T>(path, {
+    method,
+    ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+  });
+}

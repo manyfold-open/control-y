@@ -19,9 +19,9 @@ export const now = (): string => new Date().toISOString();
 /**
  * Database schema. Add your own tables here — they are created on the next request.
  * Keep semicolons out of statement bodies: the splitter below treats every semicolon
- * as a statement boundary.
+ * as a statement boundary. Exported so a test can hold that rule.
  */
-const SCHEMA = `
+export const SCHEMA = `
 -- Generic key/value store. The starter keeps its generated encryption key here;
 -- the rest of the namespace is yours.
 CREATE TABLE IF NOT EXISTS settings (
@@ -81,6 +81,148 @@ CREATE TABLE IF NOT EXISTS messages (
 );
 
 CREATE INDEX IF NOT EXISTS idx_messages_conversation ON messages (conversation_id, id);
+
+-- ── Turn Zero ──────────────────────────────────────────────────────────────
+-- The workspace directory. is_self marks the one person who signs in.
+CREATE TABLE IF NOT EXISTS people (
+  id         TEXT PRIMARY KEY,
+  name       TEXT NOT NULL,
+  org        TEXT NOT NULL DEFAULT '',
+  role       TEXT NOT NULL DEFAULT '',
+  email      TEXT NOT NULL DEFAULT '',
+  is_self    INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL
+);
+
+-- The panel. Each row is a prompt with a job, run against a connected Manyfold
+-- agent. role='consolidator' is the single merge/assign prompt, not a panellist.
+CREATE TABLE IF NOT EXISTS panel_agents (
+  key        TEXT PRIMARY KEY,
+  name       TEXT NOT NULL,
+  role       TEXT NOT NULL DEFAULT 'panel',
+  builtin    INTEGER NOT NULL DEFAULT 0,
+  enabled    INTEGER NOT NULL DEFAULT 1,
+  modified   INTEGER NOT NULL DEFAULT 0,
+  purpose    TEXT NOT NULL DEFAULT '',
+  prompt     TEXT NOT NULL,
+  sort_order INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL
+);
+
+-- What the workspace carries between reviews. source_review_id records which
+-- review minted it, which is what the "N remembered" count reads.
+CREATE TABLE IF NOT EXISTS memory_entries (
+  id               TEXT PRIMARY KEY,
+  kind             TEXT NOT NULL,
+  text             TEXT NOT NULL,
+  enabled          INTEGER NOT NULL DEFAULT 1,
+  source           TEXT NOT NULL DEFAULT '',
+  source_review_id TEXT,
+  created_at       TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS reviews (
+  id           TEXT PRIMARY KEY,
+  name         TEXT NOT NULL,
+  counterparty TEXT NOT NULL DEFAULT '',
+  period       TEXT NOT NULL DEFAULT '',
+  status       TEXT NOT NULL DEFAULT 'open',
+  created_at   TEXT NOT NULL,
+  updated_at   TEXT NOT NULL
+);
+
+-- Assignment uses the title for THIS review, not the directory role.
+CREATE TABLE IF NOT EXISTS review_people (
+  review_id    TEXT NOT NULL,
+  person_id    TEXT NOT NULL,
+  review_title TEXT NOT NULL DEFAULT '',
+  PRIMARY KEY (review_id, person_id)
+);
+
+-- Absence means in scope. Only exclusions are stored.
+CREATE TABLE IF NOT EXISTS review_memory (
+  review_id TEXT NOT NULL,
+  entry_id  TEXT NOT NULL,
+  in_scope  INTEGER NOT NULL DEFAULT 1,
+  PRIMARY KEY (review_id, entry_id)
+);
+
+-- Source documents the panel reads. Text only, held inline.
+CREATE TABLE IF NOT EXISTS documents (
+  id         TEXT PRIMARY KEY,
+  review_id  TEXT NOT NULL,
+  name       TEXT NOT NULL,
+  content    TEXT NOT NULL,
+  bytes      INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS passes (
+  id          TEXT PRIMARY KEY,
+  review_id   TEXT NOT NULL,
+  number      INTEGER NOT NULL,
+  status      TEXT NOT NULL,
+  open_count  INTEGER,
+  error       TEXT,
+  detail      TEXT NOT NULL DEFAULT '[]',
+  started_at  TEXT NOT NULL,
+  finished_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS issues (
+  id              TEXT PRIMARY KEY,
+  review_id       TEXT NOT NULL,
+  ref             TEXT NOT NULL,
+  location        TEXT NOT NULL DEFAULT '',
+  severity        TEXT NOT NULL DEFAULT 'question',
+  status          TEXT NOT NULL DEFAULT 'open',
+  statement       TEXT NOT NULL,
+  why             TEXT NOT NULL DEFAULT '',
+  raised_by       TEXT NOT NULL DEFAULT '[]',
+  assignee_id     TEXT,
+  assignee_reason TEXT NOT NULL DEFAULT '',
+  flags           TEXT NOT NULL DEFAULT '[]',
+  evidence        TEXT,
+  memory_ref      TEXT,
+  conflict        TEXT,
+  draft           TEXT,
+  resolution      TEXT,
+  sent_at         TEXT,
+  sort_order      INTEGER NOT NULL DEFAULT 0,
+  created_at      TEXT NOT NULL,
+  updated_at      TEXT NOT NULL
+);
+
+-- One paste of replies from one recipient, plus the links the panel proposed.
+CREATE TABLE IF NOT EXISTS feedback_batches (
+  id             TEXT PRIMARY KEY,
+  review_id      TEXT NOT NULL,
+  from_person_id TEXT,
+  received_at    TEXT NOT NULL,
+  text           TEXT NOT NULL,
+  status         TEXT NOT NULL DEFAULT 'linking',
+  error          TEXT,
+  applied_at     TEXT
+);
+
+CREATE TABLE IF NOT EXISTS feedback_links (
+  id         TEXT PRIMARY KEY,
+  batch_id   TEXT NOT NULL,
+  issue_id   TEXT NOT NULL,
+  effect     TEXT NOT NULL,
+  quote      TEXT NOT NULL DEFAULT '',
+  reason     TEXT NOT NULL DEFAULT '',
+  confidence TEXT NOT NULL DEFAULT 'medium',
+  decision   TEXT,
+  sort_order INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE INDEX IF NOT EXISTS idx_issues_review ON issues (review_id, status);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_issues_ref ON issues (review_id, ref);
+CREATE INDEX IF NOT EXISTS idx_documents_review ON documents (review_id);
+CREATE INDEX IF NOT EXISTS idx_passes_review ON passes (review_id, number);
+CREATE INDEX IF NOT EXISTS idx_feedback_review ON feedback_batches (review_id);
+CREATE INDEX IF NOT EXISTS idx_feedback_links_batch ON feedback_links (batch_id, sort_order);
 `;
 
 /**

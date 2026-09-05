@@ -4,23 +4,31 @@
  * when a review reached zero.
  */
 
-export default function Convergence({ passes }: { passes: number[] }) {
+export default function Convergence({ passes, running = false }: { passes: number[]; running?: boolean }) {
+  if (passes.length === 0) {
+    return (
+      <span className="convergence">
+        <span className="cv-unit">{running ? 'first pass running' : 'not run yet'}</span>
+      </span>
+    );
+  }
+
   const last = passes[passes.length - 1];
   const prior = passes.slice(0, -1);
   const landed = last === 0;
 
   return (
     <span className="convergence" aria-label={`Passes: ${passes.join(', then ')}`}>
-      {prior.map((n, i) => (
-        <span key={i} className="cv-prior">
-          {n}
+      {prior.map((count, index) => (
+        <span key={index} className="cv-prior">
+          {count}
           <span className="cv-sep" aria-hidden>
             →
           </span>
         </span>
       ))}
       <b className={landed ? 'cv-last landed' : 'cv-last'}>{last}</b>
-      <span className="cv-unit">{landed ? 'closed' : 'open'}</span>
+      <span className="cv-unit">{running ? 'open · pass running' : landed ? 'closed' : 'open'}</span>
     </span>
   );
 }

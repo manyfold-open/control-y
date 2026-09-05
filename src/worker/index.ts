@@ -14,6 +14,8 @@
  *   DELETE /api/agents/:agentId/messages    admin  reset the conversation
  *   POST   /api/agents/:agentId/chat        admin  one chat turn (text/event-stream)
  *
+ * Turn Zero's own routes live in src/worker/routes.ts and mount under /api.
+ *
  * "admin" routes require the x-admin-password header — but only when the
  * ADMIN_PASSWORD secret is set. Without it the app is open, which is what makes
  * zero-config deploys work; set the secret before sharing the URL.
@@ -35,6 +37,8 @@ import {
   verifyAgent,
 } from './connect';
 import { getConversation, handleChatTurn, resetConversation } from './chat';
+import { ensureSeed } from './seed';
+import { turnZero } from './routes';
 
 const SERVICE = 'cloudflare-worker-starter';
 
@@ -44,6 +48,7 @@ const app = new Hono<{ Bindings: Env }>();
 
 app.use('/api/*', async (c, next) => {
   await ensureSchema(c.env.DB);
+  await ensureSeed(c.env);
   await next();
 });
 
@@ -168,6 +173,9 @@ app.post('/api/agents/:agentId/chat', async (c) => {
     waitUntil: (promise) => c.executionCtx.waitUntil(promise),
   });
 });
+
+// Turn Zero: reviews, issues, people, memory, the panel. See routes.ts.
+app.route('/api', turnZero);
 
 app.all('/api/*', () => {
   throw new HttpError(404, 'not_found', 'No such API route.');
