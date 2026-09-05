@@ -15,7 +15,15 @@ import type { Env } from './types';
 import { getSetting, now, setSetting } from './db';
 
 const SEED_KEY = 'turnzero_seed';
-const SEED_VERSION = '1';
+/**
+ * Bump this whenever the seed gains a row the app then requires, so databases
+ * seeded by an older build pick it up — `ensureSeed` skips the whole seed when
+ * the stored version matches. Re-running is safe: every statement below is
+ * INSERT OR IGNORE, so existing rows, including edited prompts, are untouched.
+ *
+ * 2 — added the retrospective prompt, which getRetrospective() requires.
+ */
+const SEED_VERSION = '2';
 
 const iso = (date: string): string => new Date(`${date}T09:00:00Z`).toISOString();
 
@@ -79,6 +87,9 @@ const CEPHALUS = {
 
 const CONSOLIDATOR_PROMPT =
   'You receive the findings of every enabled agent.\n\nMerge findings that describe the same row or section into one issue citing both agents. Rank corroborated findings above single-agent findings of the same severity. Where agents disagree, keep the issue, take the higher severity, and state the disagreement and your ruling.\n\nAssign each issue using the review roster and each person’s title FOR THIS REVIEW, not their directory role. "You" is a legitimate assignee.\n\nMy own instructions override a built-in agent’s judgement.';
+
+const RETROSPECTIVE_PROMPT =
+  'A review has been closed. You are looking back at the whole of it — every pass, every issue, how each one was settled, and what the replies said.\n\nWrite the close-out for the fund manager: what this review actually cost, where the panel earned its keep, and where it wasted his time. Be specific and be blunt. An issue the panel raised three times and was wrong about three times is worth saying out loud.\n\nThen propose the rules worth carrying into the next period. A good rule is one that would have changed how this review ran: a treatment already agreed with the counterparty so it stops being re-raised, a defect that recurs so the panel looks there first, a standing instruction of the fund manager’s, or a fact about the fund the deliverable keeps getting wrong.\n\nPropose nothing you cannot tie to a specific issue in this review. A rule drawn from one ambiguous issue is worse than no rule — it will be applied to every future review. Fewer and sharper beats more.';
 
 /* ───────── memory ───────── */
 
@@ -565,6 +576,21 @@ async function applySeed(env: Env): Promise<void> {
       1,
       0,
       999,
+    ),
+  );
+  statements.push(
+    agentRow(
+      {
+        key: 'retrospective',
+        name: 'Retrospective',
+        purpose:
+          'Runs once, when you close a review. Writes the close-out and proposes the rules worth carrying forward.',
+        prompt: RETROSPECTIVE_PROMPT,
+      },
+      'retrospective',
+      1,
+      0,
+      1000,
     ),
   );
 

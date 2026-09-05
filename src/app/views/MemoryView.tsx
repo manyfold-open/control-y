@@ -120,6 +120,7 @@ export default function MemoryView({
                             {inScope ? 'In scope' : 'Out of scope'}
                           </button>
                         )}
+                        {!entry.enabled && <span className="retro-state">Not in use yet</span>}
                         <button
                           type="button"
                           role="switch"

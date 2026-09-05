@@ -10,6 +10,7 @@
  */
 
 import type {
+  AgentRole,
   Conflict,
   Evidence,
   FeedbackBatch,
@@ -23,6 +24,8 @@ import type {
   Pass,
   PassAgentResult,
   Person,
+  Retrospective,
+  RetrospectiveLesson,
   ReviewDetail,
   ReviewDocument,
   ReviewStatus,
@@ -159,19 +162,31 @@ export async function listMemory(env: Env): Promise<MemoryEntry[]> {
   return (results ?? []).map(toMemory);
 }
 
+/**
+ * `enabled` defaults to true: an entry the user wrote by hand is meant to apply.
+ * The retrospective passes false — a rule proposed by a model is listed on the
+ * Memory page but applies to nothing until the user switches it on.
+ */
 export async function createMemoryEntry(
   env: Env,
-  fields: { kind: MemoryKind; text: string; source: string; sourceReviewId?: string | null },
+  fields: {
+    kind: MemoryKind;
+    text: string;
+    source: string;
+    sourceReviewId?: string | null;
+    enabled?: boolean;
+  },
 ): Promise<MemoryEntry> {
   const id = `m-${crypto.randomUUID()}`;
   const createdAt = now();
+  const enabled = fields.enabled ?? true;
   await env.DB.prepare(
     `INSERT INTO memory_entries (id, kind, text, enabled, source, source_review_id, created_at)
-     VALUES (?, ?, ?, 1, ?, ?, ?)`,
+     VALUES (?, ?, ?, ?, ?, ?, ?)`,
   )
-    .bind(id, fields.kind, fields.text, fields.source, fields.sourceReviewId ?? null, createdAt)
+    .bind(id, fields.kind, fields.text, flag(enabled), fields.source, fields.sourceReviewId ?? null, createdAt)
     .run();
-  return { id, kind: fields.kind, text: fields.text, enabled: true, source: fields.source, createdAt };
+  return { id, kind: fields.kind, text: fields.text, enabled, source: fields.source, createdAt };
 }
 
 export async function updateMemoryEntry(
@@ -211,35 +226,60 @@ interface PanelAgentRow {
   modified: number;
   purpose: string;
   prompt: string;
+  agent_id: string | null;
 }
+
+/**
+ * The reviewer role is stored as 'panel', the name it shipped under. Renaming the
+ * stored value would need a migration, and there is no migration step (see db.ts),
+ * so the mapping lives here instead and every row written before the rename keeps
+ * working untouched. 'panel' is the DB spelling; 'reviewer' is the API spelling.
+ */
+const REVIEWER_DB_ROLE = 'panel';
+
+const toRole = (stored: string): AgentRole =>
+  stored === 'consolidator' || stored === 'retrospective' ? stored : 'reviewer';
 
 const toPanelAgent = (row: PanelAgentRow): PanelAgent => ({
   key: row.key,
   name: row.name,
-  role: row.role === 'consolidator' ? 'consolidator' : 'panel',
+  role: toRole(row.role),
   builtin: bool(row.builtin),
   enabled: bool(row.enabled),
   modified: bool(row.modified),
   purpose: row.purpose,
   prompt: row.prompt,
+  agentId: row.agent_id,
 });
 
-const AGENT_COLUMNS = 'key, name, role, builtin, enabled, modified, purpose, prompt';
+/** Always read through the target join, so `agentId` is never silently absent. */
+const AGENT_SELECT = `SELECT p.key, p.name, p.role, p.builtin, p.enabled, p.modified, p.purpose, p.prompt,
+                             t.agent_id AS agent_id
+                      FROM panel_agents p
+                      LEFT JOIN panel_agent_targets t ON t.key = p.key`;
 
+/** The reviewers, in run order. The two singleton roles are fetched separately. */
 export async function listPanelAgents(env: Env): Promise<PanelAgent[]> {
   const { results } = await env.DB.prepare(
-    `SELECT ${AGENT_COLUMNS} FROM panel_agents WHERE role = 'panel' ORDER BY sort_order, created_at`,
-  ).all<PanelAgentRow>();
+    `${AGENT_SELECT} WHERE p.role = ? ORDER BY p.sort_order, p.created_at`,
+  )
+    .bind(REVIEWER_DB_ROLE)
+    .all<PanelAgentRow>();
   return (results ?? []).map(toPanelAgent);
 }
 
-export async function getConsolidator(env: Env): Promise<PanelAgent> {
-  const row = await env.DB.prepare(
-    `SELECT ${AGENT_COLUMNS} FROM panel_agents WHERE role = 'consolidator' LIMIT 1`,
-  ).first<PanelAgentRow>();
-  if (!row) throw new HttpError(500, 'internal', 'The consolidator prompt is missing.');
+/** The one prompt holding a singleton role. Throws rather than running without it. */
+async function getSingleton(env: Env, role: 'consolidator' | 'retrospective'): Promise<PanelAgent> {
+  const row = await env.DB.prepare(`${AGENT_SELECT} WHERE p.role = ? LIMIT 1`)
+    .bind(role)
+    .first<PanelAgentRow>();
+  if (!row) throw new HttpError(500, 'internal', `The ${role} prompt is missing.`);
   return toPanelAgent(row);
 }
+
+export const getConsolidator = (env: Env): Promise<PanelAgent> => getSingleton(env, 'consolidator');
+
+export const getRetrospective = (env: Env): Promise<PanelAgent> => getSingleton(env, 'retrospective');
 
 export async function createPanelAgent(
   env: Env,
@@ -247,24 +287,43 @@ export async function createPanelAgent(
 ): Promise<PanelAgent> {
   const key = `a-${crypto.randomUUID()}`;
   const order = await env.DB.prepare(
-    "SELECT COALESCE(MAX(sort_order), 0) + 1 AS next FROM panel_agents WHERE role = 'panel'",
-  ).first<{ next: number }>();
+    'SELECT COALESCE(MAX(sort_order), 0) + 1 AS next FROM panel_agents WHERE role = ?',
+  )
+    .bind(REVIEWER_DB_ROLE)
+    .first<{ next: number }>();
   await env.DB.prepare(
     `INSERT INTO panel_agents (key, name, role, builtin, enabled, modified, purpose, prompt, sort_order, created_at)
-     VALUES (?, ?, 'panel', 0, 1, 0, ?, ?, ?, ?)`,
+     VALUES (?, ?, ?, 0, 1, 0, ?, ?, ?, ?)`,
   )
-    .bind(key, fields.name, fields.purpose, fields.prompt, order?.next ?? 1, now())
+    .bind(key, fields.name, REVIEWER_DB_ROLE, fields.purpose, fields.prompt, order?.next ?? 1, now())
     .run();
   return {
     key,
     name: fields.name,
-    role: 'panel',
+    role: 'reviewer',
     builtin: false,
     enabled: true,
     modified: false,
     purpose: fields.purpose,
     prompt: fields.prompt,
+    agentId: null,
   };
+}
+
+/** null clears the pin, restoring "whichever connected agent the workspace picks". */
+export async function setPanelAgentTarget(
+  env: Env,
+  key: string,
+  agentId: string | null,
+): Promise<void> {
+  await (agentId === null
+    ? env.DB.prepare('DELETE FROM panel_agent_targets WHERE key = ?').bind(key).run()
+    : env.DB.prepare(
+        `INSERT INTO panel_agent_targets (key, agent_id) VALUES (?, ?)
+         ON CONFLICT (key) DO UPDATE SET agent_id = excluded.agent_id`,
+      )
+        .bind(key, agentId)
+        .run());
 }
 
 export async function updatePanelAgent(
@@ -272,7 +331,7 @@ export async function updatePanelAgent(
   key: string,
   fields: Partial<{ name: string; purpose: string; prompt: string; enabled: boolean }>,
 ): Promise<PanelAgent> {
-  const existing = await env.DB.prepare(`SELECT ${AGENT_COLUMNS} FROM panel_agents WHERE key = ?`)
+  const existing = await env.DB.prepare(`${AGENT_SELECT} WHERE p.key = ?`)
     .bind(key)
     .first<PanelAgentRow>();
   if (!existing) throw new HttpError(404, 'not_found', 'No such agent.');
@@ -285,7 +344,7 @@ export async function updatePanelAgent(
     enabled: fields.enabled === undefined ? undefined : flag(fields.enabled),
     modified: promptChanged && bool(existing.builtin) ? 1 : undefined,
   });
-  const row = await env.DB.prepare(`SELECT ${AGENT_COLUMNS} FROM panel_agents WHERE key = ?`)
+  const row = await env.DB.prepare(`${AGENT_SELECT} WHERE p.key = ?`)
     .bind(key)
     .first<PanelAgentRow>();
   return toPanelAgent(row ?? existing);
@@ -296,10 +355,15 @@ export async function deletePanelAgent(env: Env, key: string): Promise<void> {
     .bind(key)
     .first<{ builtin: number; role: string }>();
   if (!row) throw new HttpError(404, 'not_found', 'No such agent.');
-  if (bool(row.builtin) || row.role === 'consolidator') {
+  // The consolidator and the retrospective are singletons the run paths require:
+  // deleting either would fail a pass or a close-out with a 500, not a message.
+  if (bool(row.builtin) || toRole(row.role) !== 'reviewer') {
     throw new HttpError(400, 'bad_request', 'Built-in agents can be switched off, not deleted.');
   }
-  await env.DB.prepare('DELETE FROM panel_agents WHERE key = ?').bind(key).run();
+  await env.DB.batch([
+    env.DB.prepare('DELETE FROM panel_agent_targets WHERE key = ?').bind(key),
+    env.DB.prepare('DELETE FROM panel_agents WHERE key = ?').bind(key),
+  ]);
 }
 
 /* ───────── reviews ───────── */
@@ -454,6 +518,7 @@ export async function deleteReview(env: Env, id: string): Promise<void> {
     env.DB.prepare('DELETE FROM feedback_batches WHERE review_id = ?').bind(id),
     env.DB.prepare('DELETE FROM issues WHERE review_id = ?').bind(id),
     env.DB.prepare('DELETE FROM passes WHERE review_id = ?').bind(id),
+    env.DB.prepare('DELETE FROM retrospectives WHERE review_id = ?').bind(id),
     env.DB.prepare('DELETE FROM documents WHERE review_id = ?').bind(id),
     env.DB.prepare('DELETE FROM review_people WHERE review_id = ?').bind(id),
     env.DB.prepare('DELETE FROM review_memory WHERE review_id = ?').bind(id),
@@ -537,34 +602,72 @@ export async function listDocuments(env: Env, reviewId: string): Promise<ReviewD
   }));
 }
 
-/** Full text, for the panel only. Never returned to the browser. */
+/** Text and inline file bytes for the panel only. Never returned to the browser. */
+export interface PanelDocument {
+  name: string;
+  content: string;
+  encoding: 'text' | 'base64';
+  mediaType: string;
+}
+
+const BINARY_DOCUMENT_PREFIX = 'control-y-file-v1:';
+
 export async function readDocuments(
   env: Env,
   reviewId: string,
-): Promise<{ name: string; content: string }[]> {
+): Promise<PanelDocument[]> {
   const { results } = await env.DB.prepare(
     'SELECT name, content FROM documents WHERE review_id = ? ORDER BY created_at',
   )
     .bind(reviewId)
     .all<{ name: string; content: string }>();
-  return results ?? [];
+  return (results ?? []).map((row) => {
+    if (row.content.startsWith(BINARY_DOCUMENT_PREFIX)) {
+      try {
+        const payload = JSON.parse(row.content.slice(BINARY_DOCUMENT_PREFIX.length)) as {
+          content?: unknown;
+          mediaType?: unknown;
+        };
+        if (typeof payload.content === 'string') {
+          return {
+            name: row.name,
+            content: payload.content,
+            encoding: 'base64' as const,
+            mediaType: typeof payload.mediaType === 'string' ? payload.mediaType : 'application/octet-stream',
+          };
+        }
+      } catch {
+        /* A malformed envelope is treated as legacy text rather than crashing a pass. */
+      }
+    }
+    return { name: row.name, content: row.content, encoding: 'text' as const, mediaType: 'text/plain' };
+  });
 }
 
 export async function addDocument(
   env: Env,
   reviewId: string,
-  fields: { name: string; content: string },
+  fields: { name: string; content: string; contentEncoding?: 'text' | 'base64'; mediaType?: string },
 ): Promise<ReviewDocument> {
   const id = `d-${crypto.randomUUID()}`;
   const createdAt = now();
-  const bytes = new TextEncoder().encode(fields.content).length;
+  const encoding = fields.contentEncoding ?? 'text';
+  const storedContent = encoding === 'base64'
+    ? `${BINARY_DOCUMENT_PREFIX}${JSON.stringify({ content: fields.content, mediaType: fields.mediaType ?? 'application/octet-stream' })}`
+    : fields.content;
+  const bytes = encoding === 'base64' ? base64ByteLength(fields.content) : new TextEncoder().encode(fields.content).length;
   await env.DB.prepare(
     'INSERT INTO documents (id, review_id, name, content, bytes, created_at) VALUES (?, ?, ?, ?, ?, ?)',
   )
-    .bind(id, reviewId, fields.name, fields.content, bytes, createdAt)
+    .bind(id, reviewId, fields.name, storedContent, bytes, createdAt)
     .run();
   await touchReview(env, reviewId);
   return { id, name: fields.name, bytes, createdAt };
+}
+
+function base64ByteLength(value: string): number {
+  const padding = value.endsWith('==') ? 2 : value.endsWith('=') ? 1 : 0;
+  return Math.max(0, Math.floor((value.length * 3) / 4) - padding);
 }
 
 export async function deleteDocument(env: Env, reviewId: string, documentId: string): Promise<void> {
@@ -880,20 +983,118 @@ export async function deleteFeedbackBatch(env: Env, batchId: string): Promise<vo
   ]);
 }
 
+/* ───────── the retrospective ───────── */
+
+interface RetrospectiveRow {
+  id: string;
+  review_id: string;
+  status: string;
+  summary: string;
+  detail: string;
+  error: string | null;
+  started_at: string;
+  finished_at: string | null;
+}
+
+const RETRO_COLUMNS = 'id, review_id, status, summary, detail, error, started_at, finished_at';
+
+const toRetrospective = (row: RetrospectiveRow): Retrospective => {
+  const detail = parseJson<{
+    wentWell?: unknown;
+    toChange?: unknown;
+    lessons?: unknown;
+  }>(row.detail, {});
+  const strings = (value: unknown): string[] =>
+    Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : [];
+  return {
+    id: row.id,
+    reviewId: row.review_id,
+    status: row.status === 'running' || row.status === 'failed' ? row.status : 'done',
+    summary: row.summary,
+    wentWell: strings(detail.wentWell),
+    toChange: strings(detail.toChange),
+    lessons: Array.isArray(detail.lessons) ? (detail.lessons as RetrospectiveLesson[]) : [],
+    error: row.error,
+    startedAt: row.started_at,
+    finishedAt: row.finished_at,
+  };
+};
+
+export async function getRetrospectiveFor(env: Env, reviewId: string): Promise<Retrospective | null> {
+  const row = await env.DB.prepare(`SELECT ${RETRO_COLUMNS} FROM retrospectives WHERE review_id = ?`)
+    .bind(reviewId)
+    .first<RetrospectiveRow>();
+  return row ? toRetrospective(row) : null;
+}
+
+/**
+ * Claims the close-out slot for a review, replacing any earlier one.
+ *
+ * Returns null when a retrospective is already running on this review, so two
+ * closes arriving together cannot both start a run. The unique index on
+ * review_id makes the upsert the whole decision — SQLite settles it in the write.
+ */
+export async function claimRetrospective(env: Env, reviewId: string): Promise<string | null> {
+  const id = `retro-${crypto.randomUUID()}`;
+  const claimed = await env.DB.prepare(
+    `INSERT INTO retrospectives (id, review_id, status, summary, detail, error, started_at, finished_at)
+     VALUES (?, ?, 'running', '', '{}', NULL, ?, NULL)
+     ON CONFLICT (review_id) DO UPDATE SET
+       id = excluded.id, status = 'running', summary = '', detail = '{}',
+       error = NULL, started_at = excluded.started_at, finished_at = NULL
+     WHERE retrospectives.status <> 'running'`,
+  )
+    .bind(id, reviewId, now())
+    .run();
+  return claimed.meta.changes ? id : null;
+}
+
+export async function finishRetrospective(
+  env: Env,
+  id: string,
+  outcome: {
+    status: 'done' | 'failed';
+    summary?: string;
+    wentWell?: string[];
+    toChange?: string[];
+    lessons?: RetrospectiveLesson[];
+    error?: string | null;
+  },
+): Promise<void> {
+  await env.DB.prepare(
+    'UPDATE retrospectives SET status = ?, summary = ?, detail = ?, error = ?, finished_at = ? WHERE id = ?',
+  )
+    .bind(
+      outcome.status,
+      outcome.summary ?? '',
+      JSON.stringify({
+        wentWell: outcome.wentWell ?? [],
+        toChange: outcome.toChange ?? [],
+        lessons: outcome.lessons ?? [],
+      }),
+      outcome.error ?? null,
+      now(),
+      id,
+    )
+    .run();
+}
+
 /* ───────── the whole review ───────── */
 
 export async function reviewDetail(env: Env, id: string): Promise<ReviewDetail> {
   const review = await getReviewSummary(env, id);
-  const [issues, documents, roster, memory, passes, feedback, panelAgents] = await Promise.all([
-    listIssues(env, id),
-    listDocuments(env, id),
-    listRoster(env, id),
-    listScopedMemory(env, id),
-    listPasses(env, id),
-    listPendingFeedback(env, id),
-    listPanelAgents(env),
-  ]);
-  return { review, issues, documents, roster, memory, passes, feedback, panelAgents };
+  const [issues, documents, roster, memory, passes, feedback, panelAgents, retrospective] =
+    await Promise.all([
+      listIssues(env, id),
+      listDocuments(env, id),
+      listRoster(env, id),
+      listScopedMemory(env, id),
+      listPasses(env, id),
+      listPendingFeedback(env, id),
+      listPanelAgents(env),
+      getRetrospectiveFor(env, id),
+    ]);
+  return { review, issues, documents, roster, memory, passes, feedback, panelAgents, retrospective };
 }
 
 /* ───────── generic partial update ───────── */

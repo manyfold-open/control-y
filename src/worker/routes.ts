@@ -11,7 +11,8 @@
 import { Hono } from 'hono';
 import type { MemoryKind, Severity, Workspace } from '../shared/types';
 import { HttpError, type Env } from './types';
-import { linkFeedback, panelReady, startPass } from './panel';
+import { linkFeedback, panelReady, startPass, startRetrospective } from './panel';
+import { listConnectedAgents } from './connect';
 import * as store from './store';
 
 const MEMORY_KINDS = ['Treatment', 'Pattern', 'Instruction', 'Fact'] as const;
@@ -90,24 +91,28 @@ export const ctrlY = new Hono<{ Bindings: Env }>();
 
 /* Workspace: everything the rail, People, Memory and Agents pages read. */
 ctrlY.get('/workspace', async (c) => {
-  const [people, memory, panelAgents, consolidator, reviews, lastPass, ready] = await Promise.all([
-    store.listPeople(c.env),
-    store.listMemory(c.env),
-    store.listPanelAgents(c.env),
-    store.getConsolidator(c.env),
-    store.listReviews(c.env),
-    store.latestPass(c.env),
-    panelReady(c.env),
-  ]);
+  const [people, memory, panelAgents, consolidator, retrospective, reviews, lastPass, connectedAgents] =
+    await Promise.all([
+      store.listPeople(c.env),
+      store.listMemory(c.env),
+      store.listPanelAgents(c.env),
+      store.getConsolidator(c.env),
+      store.getRetrospective(c.env),
+      store.listReviews(c.env),
+      store.latestPass(c.env),
+      listConnectedAgents(c.env),
+    ]);
   const workspace: Workspace = {
     people,
     memory,
     panelAgents,
     consolidator,
+    retrospective,
+    connectedAgents,
     reviews,
     openIssues: reviews.reduce((total, review) => total + review.openIssues, 0),
     lastPass,
-    panelReady: ready,
+    panelReady: connectedAgents.length > 0,
   };
   return c.json(workspace);
 });
@@ -181,15 +186,32 @@ ctrlY.post('/panel-agents', async (c) => {
   return c.json({ agent }, 201);
 });
 
+/**
+ * `agentId` pins this prompt to one connected Manyfold agent; null unpins it.
+ * It is validated against the connected list here so a typo becomes a 400 now,
+ * rather than a prompt that fails every pass from then on.
+ */
 ctrlY.patch('/panel-agents/:key', async (c) => {
+  const key = c.req.param('key');
   const body = await readBody(c.req);
-  const agent = await store.updatePanelAgent(c.env, c.req.param('key'), {
+  const agentId = nullable(body, 'agentId', 200);
+  if (agentId) {
+    const connected = await listConnectedAgents(c.env);
+    if (!connected.some((agent) => agent.agentId === agentId)) {
+      bad('That Manyfold agent is not connected.');
+    }
+  }
+  // The update runs first because it 404s on an unknown key — pinning before that
+  // check would leave a target row pointing at an agent that does not exist.
+  const updated = await store.updatePanelAgent(c.env, key, {
     name: optional(body, 'name', 120),
     purpose: optional(body, 'purpose', 400),
     prompt: optional(body, 'prompt', PROMPT_MAX_CHARS),
     enabled: boolean(body, 'enabled'),
   });
-  return c.json({ agent });
+  if (agentId === undefined) return c.json({ agent: updated });
+  await store.setPanelAgentTarget(c.env, key, agentId);
+  return c.json({ agent: { ...updated, agentId } });
 });
 
 ctrlY.delete('/panel-agents/:key', async (c) => {
@@ -211,14 +233,27 @@ ctrlY.post('/reviews', async (c) => {
   return c.json({ review }, 201);
 });
 
+/**
+ * Closing a review starts the retrospective. It runs under waitUntil like a pass,
+ * so a slow or unreachable agent cannot fail the close — the outcome, including
+ * any error, lands on the retrospective row that the review page reads.
+ */
 ctrlY.patch('/reviews/:id', async (c) => {
+  const id = c.req.param('id');
   const body = await readBody(c.req);
-  const review = await store.updateReview(c.env, c.req.param('id'), {
+  const status = enumeration(body, 'status', REVIEW_STATUSES);
+  const before = await store.getReviewSummary(c.env, id);
+  const review = await store.updateReview(c.env, id, {
     name: optional(body, 'name', 160),
     counterparty: optional(body, 'counterparty', 160),
     period: optional(body, 'period', 160),
-    status: enumeration(body, 'status', REVIEW_STATUSES),
+    status,
   });
+  // Only on the open → closed edge: renaming a review that is already closed, or
+  // closing one that is already closed, must not run it again.
+  if (status === 'closed' && before.status !== 'closed') {
+    await startRetrospective(c.env, id, (promise) => c.executionCtx.waitUntil(promise));
+  }
   return c.json({ review });
 });
 
@@ -233,9 +268,20 @@ ctrlY.post('/reviews/:id/documents', async (c) => {
   const reviewId = c.req.param('id');
   await store.getReviewSummary(c.env, reviewId);
   const body = await readBody(c.req);
+  const rawContentEncoding = body.contentEncoding === undefined ? 'text' : body.contentEncoding;
+  if (rawContentEncoding !== 'text' && rawContentEncoding !== 'base64') {
+    bad('"contentEncoding" must be "text" or "base64".');
+  }
+  const contentEncoding = rawContentEncoding as 'text' | 'base64';
+  const content = required(body, 'content', DOCUMENT_MAX_CHARS);
+  if (contentEncoding === 'base64' && (content.length % 4 !== 0 || !/^[A-Za-z0-9+/]*={0,2}$/.test(content))) {
+    bad('"content" must be valid base64 when "contentEncoding" is "base64".');
+  }
   const document = await store.addDocument(c.env, reviewId, {
     name: required(body, 'name', 200),
-    content: required(body, 'content', DOCUMENT_MAX_CHARS),
+    content,
+    contentEncoding,
+    mediaType: optional(body, 'mediaType', 200) ?? (contentEncoding === 'base64' ? 'application/octet-stream' : 'text/plain'),
   });
   return c.json({ document }, 201);
 });

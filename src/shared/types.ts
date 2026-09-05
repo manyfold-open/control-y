@@ -121,6 +121,20 @@ export interface ScopedMemoryEntry extends MemoryEntry {
   inScope: boolean;
 }
 
+/**
+ * The three jobs an agent can hold on the panel:
+ *
+ * - `reviewer`      reads the deliverable on its own and reports what is wrong.
+ * - `consolidator`  receives every reviewer's findings at once and merges them.
+ * - `retrospective` runs once, when the review is closed, and turns the whole
+ *                   review into a summary and rules the workspace can carry forward.
+ *
+ * There are many reviewers; there is exactly one consolidator and one retrospective.
+ */
+export type AgentRole = 'reviewer' | 'consolidator' | 'retrospective';
+
+export const AGENT_ROLES: AgentRole[] = ['reviewer', 'consolidator', 'retrospective'];
+
 export interface PanelAgent {
   key: string;
   name: string;
@@ -129,7 +143,14 @@ export interface PanelAgent {
   modified: boolean;
   purpose: string;
   prompt: string;
-  role: 'panel' | 'consolidator';
+  role: AgentRole;
+  /**
+   * The connected Manyfold agent this prompt runs on, or null to let the
+   * workspace pick one. Pinning is honoured strictly: if the pinned agent is
+   * later disconnected, this prompt reports that as its error rather than
+   * quietly running somewhere the user did not choose.
+   */
+  agentId: string | null;
 }
 
 export interface ReviewDocument {
@@ -210,6 +231,38 @@ export interface Pass {
   finishedAt: string | null;
 }
 
+/**
+ * One rule the retrospective proposes carrying into the next review.
+ *
+ * `memoryId` is a real entry in global memory, written switched OFF: it is listed
+ * on the Memory page from the moment it is minted but applies to nothing until the
+ * user switches it on. A lesson whose entry could not be written has a null id.
+ */
+export interface RetrospectiveLesson {
+  kind: MemoryKind;
+  text: string;
+  /** The issue refs the lesson was drawn from, e.g. ["TZ-004", "TZ-011"]. */
+  basis: string[];
+  memoryId: string | null;
+}
+
+/** The close-out of one review: what happened, and what to carry forward. */
+export interface Retrospective {
+  id: string;
+  reviewId: string;
+  status: 'running' | 'done' | 'failed';
+  /** Prose: how the review went, in the retrospective agent's own words. */
+  summary: string;
+  /** What the panel got right this time. */
+  wentWell: string[];
+  /** What to do differently next period. */
+  toChange: string[];
+  lessons: RetrospectiveLesson[];
+  error: string | null;
+  startedAt: string;
+  finishedAt: string | null;
+}
+
 export interface ReviewSummary {
   id: string;
   name: string;
@@ -256,14 +309,20 @@ export interface ReviewDetail {
   passes: Pass[];
   feedback: FeedbackBatch[];
   panelAgents: PanelAgent[];
+  /** The close-out, once the review has been closed at least once. */
+  retrospective: Retrospective | null;
 }
 
 export interface Workspace {
   people: Person[];
   memory: MemoryEntry[];
+  /** The reviewers only — the consolidator and retrospective are separate. */
   panelAgents: PanelAgent[];
   consolidator: PanelAgent;
+  retrospective: PanelAgent;
   reviews: ReviewSummary[];
+  /** Connected Manyfold agents, so the Agents page can offer them as targets. */
+  connectedAgents: ConnectedAgent[];
   openIssues: number;
   /** The most recent completed pass anywhere, so Agents can report real counts. */
   lastPass: { reviewName: string; finishedAt: string; agents: PassAgentResult[] } | null;

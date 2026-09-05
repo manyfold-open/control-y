@@ -46,6 +46,7 @@ describe('SCHEMA', () => {
         'settings', 'connect_sessions', 'agents', 'conversations', 'messages',
         'people', 'panel_agents', 'memory_entries', 'reviews', 'review_people',
         'review_memory', 'documents', 'passes', 'issues', 'feedback_batches', 'feedback_links',
+        'retrospectives',
       ]),
     );
     expect(new Set(tables).size).toBe(tables.length);
