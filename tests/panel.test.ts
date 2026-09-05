@@ -2,7 +2,9 @@ import { describe, expect, it } from 'vitest';
 import {
   buildAgentPrompt,
   buildConsolidatorPrompt,
+  buildRetrospectivePrompt,
   consolidateIssues,
+  parseLessons,
   parsePayload,
 } from '../src/worker/panel';
 import type { Issue } from '../src/shared/types';
@@ -216,5 +218,76 @@ describe('consolidateIssues', () => {
       context,
     );
     expect(issues[0].sortOrder).toBeGreaterThan(issues[1].sortOrder);
+  });
+});
+
+describe('buildRetrospectivePrompt', () => {
+  const retroCtx = {
+    header: 'THE REVIEW, NOW CLOSED\nQ1 2026 journal batch',
+    history: 'HOW IT CONVERGED\n- pass 1: 18 open',
+    issues: 'EVERY ISSUE RAISED ON THIS REVIEW\n- TZ-001 · material · resolved · agreed with Meridian',
+    known: 'WHAT THIS WORKSPACE ALREADY KNOWS\n- [Treatment] Bank charges carry no counterparty.',
+    replies: '',
+  };
+
+  it('puts the agent prompt first, then the review and its issues', () => {
+    const prompt = buildRetrospectivePrompt('You are the retrospective.', retroCtx);
+    expect(prompt.indexOf('You are the retrospective.')).toBe(0);
+    expect(prompt.indexOf(retroCtx.header)).toBeLessThan(prompt.indexOf(retroCtx.issues));
+    expect(prompt).toContain('"lessons"');
+  });
+
+  it('omits sections that are empty rather than leaving an empty heading', () => {
+    const prompt = buildRetrospectivePrompt('p', { ...retroCtx, history: '', known: '', replies: '' });
+    expect(prompt).not.toContain('\n\n\n');
+    expect(prompt).toContain(retroCtx.issues);
+  });
+});
+
+describe('parseLessons', () => {
+  const lessonCtx = { refs: ['TZ-001', 'TZ-002'] };
+
+  it('keeps a lesson that cites a ref on this review', () => {
+    const [lesson] = parseLessons(
+      [{ kind: 'Pattern', text: 'Check note 21 first.', basis: ['TZ-001'] }],
+      lessonCtx,
+    );
+    expect(lesson).toMatchObject({ kind: 'Pattern', text: 'Check note 21 first.', basis: ['TZ-001'] });
+  });
+
+  it('drops a lesson citing no issue — an untethered rule would apply to every future review', () => {
+    expect(parseLessons([{ kind: 'Fact', text: 'Something vague.', basis: [] }], lessonCtx)).toEqual([]);
+    expect(parseLessons([{ kind: 'Fact', text: 'Something vague.' }], lessonCtx)).toEqual([]);
+  });
+
+  it('drops refs that belong to another review, and the lesson with them', () => {
+    expect(parseLessons([{ text: 'x', basis: ['TZ-999'] }], lessonCtx)).toEqual([]);
+    const [lesson] = parseLessons([{ text: 'x', basis: ['TZ-999', 'TZ-002'] }], lessonCtx);
+    expect(lesson.basis).toEqual(['TZ-002']);
+  });
+
+  it('falls back to Treatment for an unreadable kind', () => {
+    const [lesson] = parseLessons([{ kind: 'Nonsense', text: 'x', basis: ['TZ-001'] }], lessonCtx);
+    expect(lesson.kind).toBe('Treatment');
+  });
+
+  it('drops entries with no text, and non-objects', () => {
+    expect(parseLessons([null, 'nope', 42, { basis: ['TZ-001'] }], lessonCtx)).toEqual([]);
+  });
+
+  it('de-duplicates lessons that say the same thing', () => {
+    const lessons = parseLessons(
+      [
+        { text: 'Check note 21 first.', basis: ['TZ-001'] },
+        { text: 'check note 21 FIRST.', basis: ['TZ-002'] },
+      ],
+      lessonCtx,
+    );
+    expect(lessons).toHaveLength(1);
+  });
+
+  it('caps how many rules one close-out can propose', () => {
+    const many = Array.from({ length: 40 }, (_, index) => ({ text: `rule ${index}`, basis: ['TZ-001'] }));
+    expect(parseLessons(many, lessonCtx).length).toBeLessThanOrEqual(12);
   });
 });

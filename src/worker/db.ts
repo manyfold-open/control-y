@@ -95,7 +95,10 @@ CREATE TABLE IF NOT EXISTS people (
 );
 
 -- The panel. Each row is a prompt with a job, run against a connected Manyfold
--- agent. role='consolidator' is the single merge/assign prompt, not a panellist.
+-- agent. role='panel' is a reviewer (the API calls it that; the stored value is
+-- the original name and is mapped in store.ts so existing rows keep working).
+-- role='consolidator' is the single merge/assign prompt and role='retrospective'
+-- the single close-out prompt — neither is a panellist.
 CREATE TABLE IF NOT EXISTS panel_agents (
   key        TEXT PRIMARY KEY,
   name       TEXT NOT NULL,
@@ -107,6 +110,14 @@ CREATE TABLE IF NOT EXISTS panel_agents (
   prompt     TEXT NOT NULL,
   sort_order INTEGER NOT NULL DEFAULT 0,
   created_at TEXT NOT NULL
+);
+
+-- Which connected Manyfold agent a prompt runs on. A missing row means "whichever
+-- one the workspace picks", which is what every prompt did before this existed —
+-- so this is a separate table rather than a column, there being no migration step.
+CREATE TABLE IF NOT EXISTS panel_agent_targets (
+  key      TEXT PRIMARY KEY,
+  agent_id TEXT NOT NULL
 );
 
 -- What the workspace carries between reviews. source_review_id records which
@@ -205,6 +216,20 @@ CREATE TABLE IF NOT EXISTS feedback_batches (
   applied_at     TEXT
 );
 
+-- The close-out of one review, written when it is closed. At most one row per
+-- review survives: closing again replaces it. detail holds the lessons as JSON,
+-- the same way passes.detail holds its agent results.
+CREATE TABLE IF NOT EXISTS retrospectives (
+  id          TEXT PRIMARY KEY,
+  review_id   TEXT NOT NULL,
+  status      TEXT NOT NULL,
+  summary     TEXT NOT NULL DEFAULT '',
+  detail      TEXT NOT NULL DEFAULT '{}',
+  error       TEXT,
+  started_at  TEXT NOT NULL,
+  finished_at TEXT
+);
+
 CREATE TABLE IF NOT EXISTS feedback_links (
   id         TEXT PRIMARY KEY,
   batch_id   TEXT NOT NULL,
@@ -223,6 +248,7 @@ CREATE INDEX IF NOT EXISTS idx_documents_review ON documents (review_id);
 CREATE INDEX IF NOT EXISTS idx_passes_review ON passes (review_id, number);
 CREATE INDEX IF NOT EXISTS idx_feedback_review ON feedback_batches (review_id);
 CREATE INDEX IF NOT EXISTS idx_feedback_links_batch ON feedback_links (batch_id, sort_order);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_retrospectives_review ON retrospectives (review_id);
 `;
 
 /**

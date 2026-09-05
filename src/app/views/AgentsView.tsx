@@ -7,11 +7,18 @@
  */
 
 import { useState } from 'react';
-import type { PanelAgent, Workspace } from '../../shared/types';
+import type { AgentRole, PanelAgent, Workspace } from '../../shared/types';
 import { send } from '../api';
 import { errorText } from '../lib';
 import Icon from '../components/Icon';
 import Modal, { Field } from '../components/Modal';
+
+const ROLE_BLURB: Record<AgentRole, string> = {
+  reviewer: 'One job, one prompt. It reads the documents on its own and reports what it finds.',
+  consolidator: 'The one prompt that merges, assigns and drafts. It sees every reviewer’s findings at once.',
+  retrospective:
+    'The one prompt that runs when you close a review. It writes the close-out and proposes what to remember.',
+};
 
 export default function AgentsView({
   workspace,
@@ -52,12 +59,13 @@ export default function AgentsView({
         <div>
           <h1 className="page-title">Agents</h1>
           <p className="page-sub">
-            A review is not one model call. Each agent has a different job, so each gets its own prompt and reports its
-            own count — including zero.
+            A review is not one model call. <b>Reviewers</b> read the deliverable separately and report what they find —
+            including nothing. The <b>consolidator</b> merges them into one list. The <b>retrospective</b> runs when you
+            close the review and says what to carry forward.
           </p>
         </div>
         <button className="button primary" type="button" onClick={() => setEditing('new')}>
-          <Icon name="plus" /> Add agent
+          <Icon name="plus" /> Add reviewer
         </button>
       </header>
 
@@ -100,6 +108,7 @@ export default function AgentsView({
               <div className="agent-row-foot">
                 <span className="agent-last">{lastResult(workspace, agent)}</span>
                 <span className="row">
+                  <TargetPicker agent={agent} workspace={workspace} busy={busy} act={act} />
                   <button className="button ghost small" type="button" onClick={() => setEditing(agent)}>
                     Edit
                   </button>
@@ -114,30 +123,28 @@ export default function AgentsView({
       )}
 
       {workspace && (
-        <section className="consolidator">
-          <div className="memory-section-head">
-            <h2 className="section-title">{workspace.consolidator.name}</h2>
-            <p className="section-blurb">{workspace.consolidator.purpose}</p>
-          </div>
-
-          <div className="table-card">
-            <article className="agent-row">
-              <div className="agent-row-foot">
-                <span className="agent-last">
-                  Tie-break rules live in this prompt, not in configuration switches. You can override any individual
-                  ruling anyway.
-                </span>
-                <span className="row">
-                  <button className="button ghost small" type="button" onClick={() => setEditing(workspace.consolidator)}>
-                    Edit
-                  </button>
-                  {promptToggle('consolidator')}
-                </span>
-              </div>
-              {openKey === 'consolidator' && <pre className="prompt-box">{workspace.consolidator.prompt}</pre>}
-            </article>
-          </div>
-        </section>
+        <>
+          <Singleton
+            agent={workspace.consolidator}
+            note="Tie-break rules live in this prompt, not in configuration switches. You can override any individual ruling anyway."
+            open={openKey === workspace.consolidator.key}
+            toggle={promptToggle}
+            onEdit={() => setEditing(workspace.consolidator)}
+            workspace={workspace}
+            busy={busy}
+            act={act}
+          />
+          <Singleton
+            agent={workspace.retrospective}
+            note="Every rule it proposes is written to Memory switched off. Nothing it decides reaches a future review until you switch that rule on."
+            open={openKey === workspace.retrospective.key}
+            toggle={promptToggle}
+            onEdit={() => setEditing(workspace.retrospective)}
+            workspace={workspace}
+            busy={busy}
+            act={act}
+          />
+        </>
       )}
 
       {editing && (
@@ -149,6 +156,104 @@ export default function AgentsView({
         />
       )}
     </div>
+  );
+}
+
+/**
+ * Which connected Manyfold agent this prompt runs on.
+ *
+ * A pin that names an agent no longer connected stays visible and stays selected,
+ * rather than silently resetting to "Any" — the run reports it as an error, and
+ * the page should say the same thing.
+ */
+function TargetPicker({
+  agent,
+  workspace,
+  busy,
+  act,
+}: {
+  agent: PanelAgent;
+  workspace: Workspace;
+  busy: boolean;
+  act: (run: () => Promise<unknown>) => Promise<boolean>;
+}) {
+  const connected = workspace.connectedAgents;
+  const stale = agent.agentId !== null && !connected.some((entry) => entry.agentId === agent.agentId);
+  if (connected.length === 0) return null;
+
+  return (
+    <select
+      className={stale ? 'agent-target stale' : 'agent-target'}
+      aria-label={`Which Manyfold agent ${agent.name} runs on`}
+      title={
+        stale
+          ? 'This Manyfold agent is no longer connected. This prompt will fail until you pick another.'
+          : 'Which connected Manyfold agent this prompt runs on.'
+      }
+      disabled={busy}
+      value={agent.agentId ?? ''}
+      onChange={(event) =>
+        void act(() =>
+          send('PATCH', `/api/panel-agents/${agent.key}`, { agentId: event.target.value || null }),
+        )
+      }
+    >
+      <option value="">Any connected agent</option>
+      {connected.map((entry) => (
+        <option key={entry.agentId} value={entry.agentId}>
+          {entry.name}
+        </option>
+      ))}
+      {stale && (
+        <option value={agent.agentId as string}>Disconnected agent — pick another</option>
+      )}
+    </select>
+  );
+}
+
+/** One of the two roles there is exactly one of: no switch, no delete, just a prompt. */
+function Singleton({
+  agent,
+  note,
+  open,
+  toggle,
+  onEdit,
+  workspace,
+  busy,
+  act,
+}: {
+  agent: PanelAgent;
+  note: string;
+  open: boolean;
+  toggle: (key: string) => React.ReactNode;
+  onEdit: () => void;
+  workspace: Workspace;
+  busy: boolean;
+  act: (run: () => Promise<unknown>) => Promise<boolean>;
+}) {
+  return (
+    <section className="consolidator">
+      <div className="memory-section-head">
+        <h2 className="section-title">{agent.name}</h2>
+        <p className="section-blurb">{agent.purpose}</p>
+      </div>
+
+      <div className="table-card">
+        <article className="agent-row">
+          <div className="agent-row-foot">
+            <span className="agent-last">{note}</span>
+            <span className="row">
+              <TargetPicker agent={agent} workspace={workspace} busy={busy} act={act} />
+              <button className="button ghost small" type="button" onClick={onEdit}>
+                Edit
+              </button>
+              {toggle(agent.key)}
+            </span>
+          </div>
+          {open && <pre className="prompt-box">{agent.prompt}</pre>}
+        </article>
+      </div>
+    </section>
   );
 }
 
@@ -195,7 +300,8 @@ function AgentDialog({
   const [purpose, setPurpose] = useState(agent?.purpose ?? '');
   const [prompt, setPrompt] = useState(agent?.prompt ?? '');
   const [confirmDelete, setConfirmDelete] = useState(false);
-  const consolidator = agent?.role === 'consolidator';
+  const role = agent?.role ?? 'reviewer';
+  const reviewer = role === 'reviewer';
 
   const save = () =>
     void act(() =>
@@ -214,12 +320,8 @@ function AgentDialog({
 
   return (
     <Modal
-      title={agent ? agent.name : 'New agent'}
-      sub={
-        consolidator
-          ? 'The one prompt that merges, assigns and drafts. It sees every agent’s findings at once.'
-          : 'One job, one prompt. It reads the documents on its own and reports what it finds.'
-      }
+      title={agent ? agent.name : 'New reviewer'}
+      sub={ROLE_BLURB[role]}
       wide
       onClose={onClose}
     >
@@ -227,7 +329,7 @@ function AgentDialog({
         <Field label="Name">
           <input value={name} onChange={(event) => setName(event.target.value)} placeholder="Cephalus allocation watch" />
         </Field>
-        {!consolidator && (
+        {reviewer && (
           <Field label="What it is for" hint="One line, shown on this page.">
             <input
               value={purpose}
@@ -248,7 +350,7 @@ function AgentDialog({
           />
         </Field>
         <div className="dialog-foot">
-          {agent && !agent.builtin && agent.role === 'panel' && (
+          {agent && !agent.builtin && reviewer && (
             <button
               className={confirmDelete ? 'button danger small' : 'button danger-outline small'}
               type="button"
