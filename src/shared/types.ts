@@ -74,3 +74,178 @@ export type ChatEvent =
 export interface ApiErrorBody {
   error: { code: string; message: string };
 }
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   Turn Zero domain.
+
+   Everything below is served by the Worker from D1 and rendered by the SPA.
+   Dates are ISO strings; the browser does the formatting.
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+export type Severity = 'material' | 'presentational' | 'question';
+export type IssueStatus = 'open' | 'resolved' | 'dismissed';
+export type IssueFlag = 'new' | 'revised' | 'contradicts';
+export type MemoryKind = 'Treatment' | 'Pattern' | 'Instruction' | 'Fact';
+export type LinkEffect = 'RESOLVES' | 'PARTIAL' | 'CONTRADICTS' | 'CONTEXT';
+export type LinkDecision = 'accept' | 'reject';
+export type ReviewStatus = 'open' | 'closed';
+
+export const MEMORY_KINDS: MemoryKind[] = ['Treatment', 'Pattern', 'Instruction', 'Fact'];
+export const SEVERITIES: Severity[] = ['material', 'presentational', 'question'];
+
+export interface Person {
+  id: string;
+  name: string;
+  org: string;
+  role: string;
+  email: string;
+  isSelf: boolean;
+}
+
+/** A person as they appear on one review: the title that drives assignment. */
+export interface RosterEntry extends Person {
+  reviewTitle: string;
+}
+
+export interface MemoryEntry {
+  id: string;
+  kind: MemoryKind;
+  text: string;
+  enabled: boolean;
+  source: string;
+  createdAt: string;
+}
+
+/** A memory entry seen from one review: does it apply to this one? */
+export interface ScopedMemoryEntry extends MemoryEntry {
+  inScope: boolean;
+}
+
+export interface PanelAgent {
+  key: string;
+  name: string;
+  builtin: boolean;
+  enabled: boolean;
+  modified: boolean;
+  purpose: string;
+  prompt: string;
+  role: 'panel' | 'consolidator';
+}
+
+export interface ReviewDocument {
+  id: string;
+  name: string;
+  bytes: number;
+  createdAt: string;
+}
+
+export interface Evidence {
+  label: string;
+  lines: string[];
+}
+
+export interface Conflict {
+  positions: { agent: string; verdict: string }[];
+  ruling: string;
+}
+
+export interface Issue {
+  id: string;
+  ref: string;
+  location: string;
+  severity: Severity;
+  status: IssueStatus;
+  statement: string;
+  whyItMatters: string;
+  raisedBy: string[];
+  assigneeId: string | null;
+  assigneeReason: string;
+  flags: IssueFlag[];
+  evidence: Evidence | null;
+  memory: { entryId: string; effect: string } | null;
+  conflict: Conflict | null;
+  draft: string | null;
+  resolution: string | null;
+  sentAt: string | null;
+}
+
+/** What one agent reported on one pass. `findings: 0` is a real result. */
+export interface PassAgentResult {
+  key: string;
+  name: string;
+  findings: number | null;
+  error: string | null;
+}
+
+export interface Pass {
+  id: string;
+  number: number;
+  status: 'running' | 'done' | 'failed';
+  openCount: number | null;
+  error: string | null;
+  agents: PassAgentResult[];
+  memoryEffects: number;
+  startedAt: string;
+  finishedAt: string | null;
+}
+
+export interface ReviewSummary {
+  id: string;
+  name: string;
+  counterparty: string;
+  period: string;
+  status: ReviewStatus;
+  /** Open-issue count after each completed pass — the only number that matters. */
+  passes: number[];
+  documents: number;
+  agents: number;
+  openIssues: number;
+  memoryProduced: number;
+  running: boolean;
+  updatedAt: string;
+}
+
+export interface FeedbackLink {
+  id: string;
+  issueId: string;
+  effect: LinkEffect;
+  quote: string;
+  reason: string;
+  confidence: 'high' | 'medium' | 'low';
+  decision: LinkDecision | null;
+}
+
+export interface FeedbackBatch {
+  id: string;
+  fromPersonId: string | null;
+  fromName: string;
+  receivedAt: string;
+  text: string;
+  status: 'linking' | 'ready' | 'failed';
+  error: string | null;
+  links: FeedbackLink[];
+}
+
+export interface ReviewDetail {
+  review: ReviewSummary;
+  issues: Issue[];
+  documents: ReviewDocument[];
+  roster: RosterEntry[];
+  memory: ScopedMemoryEntry[];
+  passes: Pass[];
+  feedback: FeedbackBatch[];
+  panelAgents: PanelAgent[];
+}
+
+export interface Workspace {
+  people: Person[];
+  memory: MemoryEntry[];
+  panelAgents: PanelAgent[];
+  consolidator: PanelAgent;
+  reviews: ReviewSummary[];
+  openIssues: number;
+  /** The most recent completed pass anywhere, so Agents can report real counts. */
+  lastPass: { reviewName: string; finishedAt: string; agents: PassAgentResult[] } | null;
+  /** Is there a connected Manyfold agent the panel can actually run on? */
+  panelReady: boolean;
+}

@@ -47,9 +47,13 @@ export default function SettingsView(props: {
 
   return (
     <section className="panel">
-      <h2>Connected agents</h2>
       {props.agents.length === 0 && (
-        <p className="muted">No agents connected yet — connect one below.</p>
+        <>
+          <h2>No agents connected</h2>
+          <p className="muted">
+            Turn Zero runs its panel on agents you host on Manyfold. Connect one to give the panel something to run.
+          </p>
+        </>
       )}
 
       <div className="agent-list">
@@ -106,20 +110,16 @@ export default function SettingsView(props: {
 
       {error && <div className="notice error">{error}</div>}
 
-      <h3>Connect more agents</h3>
-      <p className="muted">
-        Re-approving an agent that is already connected rotates its token in place — useful when an
-        authorization expired.
-      </p>
+      {props.agents.length > 0 && (
+        <>
+          <h3>Connect more agents</h3>
+          <p className="muted">
+            Re-approving an agent that is already connected rotates its token in place — useful when an authorization
+            expired.
+          </p>
+        </>
+      )}
       <ConnectPanel initialSession={props.initialSession} onConnected={props.refreshState} />
-
-      <h3>About this deployment</h3>
-      <p className="muted">
-        Agent tokens are AES-GCM encrypted in your D1 database and never sent to the browser. Set
-        the <code>ADMIN_PASSWORD</code> secret to lock this page (and chat) behind a password, and{' '}
-        <code>CONFIG_ENCRYPTION_KEY</code> to keep the encryption key out of the database. See the
-        README for details.
-      </p>
     </section>
   );
 }
