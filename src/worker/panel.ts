@@ -49,6 +49,7 @@ import {
   readDocuments,
   upsertIssueStatement,
   type IssueWrite,
+  type PanelDocument,
 } from './store';
 
 const TURN_TIMEOUT_MS = 4 * 60_000;
@@ -104,7 +105,7 @@ async function credentialResolver(env: Env): Promise<CredentialFor> {
  * an idempotency key, and every panel call is a distinct prompt sent exactly
  * once — a pass is never retried in place, only re-run as a new pass.
  */
-async function ask(cred: AgentCredential, prompt: string): Promise<string> {
+async function ask(cred: AgentCredential, prompt: string, documents: PanelDocument[] = []): Promise<string> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), TURN_TIMEOUT_MS);
   try {
@@ -115,7 +116,19 @@ async function ask(cred: AgentCredential, prompt: string): Promise<string> {
           kind: 'message',
           role: 'user',
           messageId: `turnzero-${crypto.randomUUID()}`,
-          parts: [{ kind: 'text', text: prompt }],
+          parts: [
+            { kind: 'text', text: prompt },
+            ...documents
+              .filter((document) => document.encoding === 'base64')
+              .map((document) => ({
+                kind: 'file',
+                file: {
+                  bytes: document.content,
+                  mimeType: document.mediaType,
+                  name: document.name,
+                },
+              })),
+          ],
         },
         configuration: { acceptedOutputModes: ['text/plain'] },
       },
@@ -222,10 +235,13 @@ function refMinter(existing: string[]): () => string {
 
 const bullet = (lines: string[]): string => lines.map((line) => `- ${line}`).join('\n');
 
-function documentsBlock(docs: { name: string; content: string }[]): string {
+function documentsBlock(docs: PanelDocument[]): string {
   let budget = DOC_CHARS_TOTAL;
   return docs
     .map((doc) => {
+      if (doc.encoding === 'base64') {
+        return `### ${doc.name}\n[attached to the message as a ${doc.mediaType} file]`;
+      }
       const room = Math.min(DOC_CHARS_EACH, budget);
       budget -= room;
       if (room <= 0) return `### ${doc.name}\n[not included — document budget reached]`;
@@ -545,7 +561,7 @@ async function runPass(
 
   const results = await mapLimit(enabled, AGENT_CONCURRENCY, async (agent) => {
     try {
-      const reply = await ask(await credentialOf(agent), buildAgentPrompt(agent.prompt, ctx));
+      const reply = await ask(await credentialOf(agent), buildAgentPrompt(agent.prompt, ctx), documents);
       const payload = parsePayload<{ findings?: unknown }>(reply);
       const raw = Array.isArray(payload?.findings) ? payload.findings : null;
       if (!raw) {

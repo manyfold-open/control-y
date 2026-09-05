@@ -106,10 +106,8 @@ export default function App() {
     <div className="app">
       <nav className="rail" aria-label="Workspace">
         <div className="rail-brand">
-          <span className="rail-mark" aria-hidden>
-            ◪
-          </span>
-          <span className="rail-wordmark">Turn Zero</span>
+          <img className="rail-mark" src="/ctrl-y-badge.png" alt="" aria-hidden="true" />
+          <img className="rail-wordmark" src="/ctrl-y-logo-wordmark.png" alt="Ctrl + Y" />
         </div>
 
         <div className="rail-nav">

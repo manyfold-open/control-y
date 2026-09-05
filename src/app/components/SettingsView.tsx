@@ -51,7 +51,7 @@ export default function SettingsView(props: {
         <>
           <h2>No agents connected</h2>
           <p className="muted">
-            Turn Zero runs its panel on agents you host on Manyfold. Connect one to give the panel something to run.
+            Ctrl + Y runs its panel on agents you host on Manyfold. Connect one to give the panel something to run.
           </p>
         </>
       )}
