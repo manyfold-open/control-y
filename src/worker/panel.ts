@@ -18,7 +18,6 @@
 
 import type {
   Conflict,
-  Evidence,
   Issue,
   IssueFlag,
   IssueStatus,
@@ -28,6 +27,7 @@ import type {
   RetrospectiveLesson,
   Severity,
 } from '../shared/types';
+import { evidenceText, readEvidence } from '../shared/evidence';
 import { MEMORY_KINDS } from '../shared/types';
 import { HttpError, type AgentCredential, type Env } from './types';
 import { A2AError, consumeA2AStream, safeErrorText } from './a2a';
@@ -191,17 +191,6 @@ const text = (value: unknown, limit = 2000): string =>
 const oneOf = <T extends string>(value: unknown, allowed: readonly T[], fallback: T): T =>
   allowed.includes(value as T) ? (value as T) : fallback;
 
-function asEvidence(value: unknown): Evidence | null {
-  if (!value || typeof value !== 'object') return null;
-  const raw = value as { label?: unknown; lines?: unknown };
-  const lines = Array.isArray(raw.lines)
-    ? raw.lines.map((line) => text(line, 300)).filter(Boolean).slice(0, 40)
-    : [];
-  const label = text(raw.label, 160);
-  if (!label && lines.length === 0) return null;
-  return { label: label || 'Evidence', lines };
-}
-
 function asConflict(value: unknown): Conflict | null {
   if (!value || typeof value !== 'object') return null;
   const raw = value as { positions?: unknown; ruling?: unknown };
@@ -234,6 +223,11 @@ function refMinter(existing: string[]): () => string {
 /* ───────── prompt building ───────── */
 
 const bullet = (lines: string[]): string => lines.map((line) => `- ${line}`).join('\n');
+const indent = (block: string, by: number): string =>
+  block
+    .split('\n')
+    .map((line) => `${' '.repeat(by)}${line}`)
+    .join('\n');
 
 function documentsBlock(docs: PanelDocument[]): string {
   let budget = DOC_CHARS_TOTAL;
@@ -274,7 +268,7 @@ export function buildAgentPrompt(agentPrompt: string, ctx: PassContext): string 
     '───────────────────────────────────────',
     `${JSON_ONLY}
 
-{"findings":[{"location":"where in the deliverable, e.g. staging!row 47","severity":"material|presentational|question","statement":"one sentence saying what is wrong","whyItMatters":"why it matters to the fund manager","evidence":{"label":"file and location","lines":["quoted lines that prove it"]}}]}
+{"findings":[{"location":"where in the deliverable, e.g. staging!row 47","severity":"material|presentational|question","statement":"one sentence saying what is wrong","whyItMatters":"why it matters to the fund manager","evidence":{"label":"file and location","quote":"a passage quoted from the document, when the proof is prose — otherwise null","rows":[{"field":"the field or line item","value":"what it holds, exactly as the document has it","note":"what does not resolve about it, or null"}]}}]}
 
 Return {"findings":[]} when you find nothing. Nothing found is a real result and is worth stating.
 Raise only what you can anchor to the documents above.`,
@@ -301,7 +295,7 @@ export function buildConsolidatorPrompt(
     '───────────────────────────────────────',
     `${JSON_ONLY}
 
-{"issues":[{"ref":"the ref of an issue carried in, or null when new","status":"open|resolved|dismissed","severity":"material|presentational|question","location":"where in the deliverable","statement":"one sentence saying what is wrong","whyItMatters":"why it matters","raisedBy":["the exact name of each agent that found it"],"assigneeId":"an id from the roster","assigneeReason":"why this person and not another, in one sentence","flags":["new","revised","contradicts"],"evidence":{"label":"...","lines":["..."]},"memory":{"entryId":"the id of the memory entry that changed this issue","effect":"what it changed, in one line"},"conflict":{"positions":[{"agent":"name","verdict":"its position"}],"ruling":"your ruling and why"},"draft":"the message to send to the assignee, signed by nobody","resolution":"how it was settled — only when status is resolved"}]}
+{"issues":[{"ref":"the ref of an issue carried in, or null when new","status":"open|resolved|dismissed","severity":"material|presentational|question","location":"where in the deliverable","statement":"one sentence saying what is wrong","whyItMatters":"why it matters","raisedBy":["the exact name of each agent that found it"],"assigneeId":"an id from the roster","assigneeReason":"why this person and not another, in one sentence","flags":["new","revised","contradicts"],"evidence":{"label":"...","quote":"...","rows":[{"field":"...","value":"...","note":"..."}]},"memory":{"entryId":"the id of the memory entry that changed this issue","effect":"what it changed, in one line"},"conflict":{"positions":[{"agent":"name","verdict":"its position"}],"ruling":"your ruling and why"},"draft":"the message to send to the assignee, signed by nobody","resolution":"how it was settled — only when status is resolved"}]}
 
 Rules:
 - Return EVERY issue carried in above, with its status updated by the replies, AND every new issue. Keep the ref of a carried issue exactly. Use null for the ref of a new one.
@@ -394,7 +388,7 @@ export function consolidateIssues(raw: unknown[], ctx: ConsolidationContext): Is
       assigneeReason: text(value.assigneeReason, 400),
       // A brand-new issue is marked new even when the model forgot to say so.
       flags: existing ? flags : [...new Set<IssueFlag>([...flags, 'new'])],
-      evidence: asEvidence(value.evidence) ?? existing?.evidence ?? null,
+      evidence: readEvidence(value.evidence) ?? existing?.evidence ?? null,
       memory,
       conflict: asConflict(value.conflict),
       draft: text(value.draft, 4000) || null,
@@ -604,12 +598,12 @@ async function runPass(
       .map((entry) => {
         if (entry.findings.length === 0) return `### ${entry.agent.name}\nNothing found.`;
         const lines = entry.findings.map((finding, index) => {
-          const evidence = asEvidence(finding.evidence);
+          const evidence = readEvidence(finding.evidence);
           return [
             `${index + 1}. [${text(finding.severity, 20) || 'question'}] ${text(finding.location, 160)}`,
             `   ${text(finding.statement, 600)}`,
             `   Why: ${text(finding.whyItMatters, 600)}`,
-            evidence ? `   Evidence (${evidence.label}): ${evidence.lines.join(' | ')}` : '',
+            evidence ? `   Evidence (${evidence.label}):\n${indent(evidenceText(evidence), 5)}` : '',
           ]
             .filter(Boolean)
             .join('\n');

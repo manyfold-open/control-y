@@ -48,12 +48,7 @@ export default function SettingsView(props: {
   return (
     <section className="panel">
       {props.agents.length === 0 && (
-        <>
-          <h2>No agents connected</h2>
-          <p className="muted">
-            Ctrl + Y runs its panel on agents you host on Manyfold. Connect one to give the panel something to run.
-          </p>
-        </>
+        <h2>No agents connected</h2>
       )}
 
       <div className="agent-list">

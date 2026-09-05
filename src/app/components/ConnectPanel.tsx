@@ -115,12 +115,6 @@ export default function ConnectPanel(props: {
         </div>
       )}
 
-      {!session && !result && (
-        <p className="muted">
-          Opens Manyfold in a popup where you pick which of your agents to share with this app.
-        </p>
-      )}
-
       {result?.status === 'denied' && <div className="notice error">You declined the request on Manyfold.</div>}
       {result?.status === 'expired' && (
         <div className="notice error">That authorization expired — start again.</div>

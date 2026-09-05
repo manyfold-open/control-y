@@ -82,7 +82,7 @@ CREATE TABLE IF NOT EXISTS messages (
 
 CREATE INDEX IF NOT EXISTS idx_messages_conversation ON messages (conversation_id, id);
 
--- ── Turn Zero ──────────────────────────────────────────────────────────────
+-- ── Ctrl+Y ────────────────────────────────────────────────────────────────
 -- The workspace directory. is_self marks the one person who signs in.
 CREATE TABLE IF NOT EXISTS people (
   id         TEXT PRIMARY KEY,

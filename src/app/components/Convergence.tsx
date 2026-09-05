@@ -19,15 +19,17 @@ export default function Convergence({ passes, running = false }: { passes: numbe
 
   return (
     <span className="convergence" aria-label={`Passes: ${passes.join(', then ')}`}>
-      {prior.map((count, index) => (
-        <span key={index} className="cv-prior">
-          {count}
-          <span className="cv-sep" aria-hidden>
-            →
+      <span className="cv-figures">
+        {prior.map((count, index) => (
+          <span key={index} className="cv-prior">
+            {count}
+            <span className="cv-sep" aria-hidden>
+              →
+            </span>
           </span>
-        </span>
-      ))}
-      <b className={landed ? 'cv-last landed' : 'cv-last'}>{last}</b>
+        ))}
+        <b className={landed ? 'cv-last landed' : 'cv-last'}>{last}</b>
+      </span>
       <span className="cv-unit">{running ? 'open · pass running' : landed ? 'closed' : 'open'}</span>
     </span>
   );

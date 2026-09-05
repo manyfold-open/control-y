@@ -1,5 +1,5 @@
 /**
- * Turn Zero storage: every read and write the product does against D1.
+ * Ctrl+Y storage: every read and write the product does against D1.
  *
  * Rows are flat and JSON-free wherever a column can carry the value; the four
  * shapes that are genuinely nested (raised_by, flags, evidence, conflict) are
@@ -34,6 +34,7 @@ import type {
   ScopedMemoryEntry,
   Severity,
 } from '../shared/types';
+import { readEvidence } from '../shared/evidence';
 import { HttpError, type Env } from './types';
 import { now } from './db';
 
@@ -715,7 +716,8 @@ const toIssue = (row: IssueRow): Issue => ({
   assigneeId: row.assignee_id,
   assigneeReason: row.assignee_reason,
   flags: parseArray<IssueFlag>(row.flags),
-  evidence: parseJson<Evidence | null>(row.evidence, null),
+  /* Rows written before evidence was structured still hold `lines`. */
+  evidence: readEvidence(parseJson<unknown>(row.evidence, null)),
   memory: parseJson<{ entryId: string; effect: string } | null>(row.memory_ref, null),
   conflict: parseJson<Conflict | null>(row.conflict, null),
   draft: row.draft,

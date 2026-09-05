@@ -121,7 +121,7 @@ Manyfold A2A (message/stream, tasks/get)   ← per-agent bearer token, decrypted
 | `src/worker/chat.ts` | One chat turn: agent SSE in, app SSE out, D1 persistence |
 | `src/worker/crypto.ts` | AES-GCM seal/unseal, constant-time compare |
 | `src/worker/db.ts` | Schema (runtime-applied) and settings store |
-| `src/worker/routes.ts` | Turn Zero's API: reviews, issues, people, memory, the panel |
+| `src/worker/routes.ts` | Ctrl+Y's API: reviews, issues, people, memory, the panel |
 | `src/worker/store.ts` | Every D1 read and write behind those routes |
 | `src/worker/panel.ts` | Running a pass: each agent, then the consolidator |
 | `src/worker/seed.ts` | First-run content — one open review and two closed ones |

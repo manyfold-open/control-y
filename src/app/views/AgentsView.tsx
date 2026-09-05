@@ -47,9 +47,28 @@ export default function AgentsView({
     }
   };
 
-  const promptToggle = (key: string) => (
-    <button className="button ghost small" type="button" onClick={() => setOpenKey(openKey === key ? null : key)}>
-      {openKey === key ? 'Hide prompt' : 'View prompt'}
+  const editButton = (agent: PanelAgent) => (
+    <button
+      className="icon-button"
+      type="button"
+      title="Edit"
+      aria-label={`Edit ${agent.name}`}
+      onClick={() => setEditing(agent)}
+    >
+      <Icon name="edit" />
+    </button>
+  );
+
+  const promptToggle = (key: string, name: string) => (
+    <button
+      className={openKey === key ? 'icon-button open' : 'icon-button'}
+      type="button"
+      title="Prompt"
+      aria-expanded={openKey === key}
+      aria-label={`${openKey === key ? 'Hide' : 'Show'} the prompt for ${name}`}
+      onClick={() => setOpenKey(openKey === key ? null : key)}
+    >
+      <Icon name="chevron" />
     </button>
   );
 
@@ -58,11 +77,11 @@ export default function AgentsView({
       <header className="page-head">
         <div>
           <h1 className="page-title">Agents</h1>
-          <p className="page-sub">
-            A review is not one model call. <b>Reviewers</b> read the deliverable separately and report what they find —
-            including nothing. The <b>consolidator</b> merges them into one list. The <b>retrospective</b> runs when you
-            close the review and says what to carry forward.
-          </p>
+          {workspace?.lastPass && (
+            <p className="page-scope" title="Every count below is from this pass">
+              <Icon name="reviews" size={14} /> Last pass · {workspace.lastPass.reviewName}
+            </p>
+          )}
         </div>
         <button className="button primary" type="button" onClick={() => setEditing('new')}>
           <Icon name="plus" /> Add reviewer
@@ -74,8 +93,7 @@ export default function AgentsView({
 
       {workspace && !workspace.panelReady && (
         <div className="notice">
-          No Manyfold agent is connected, so a pass cannot run. Connect one under <b>Connections</b> — the prompts below
-          run on it.
+          No agent connected, so a pass cannot run. Connect one under <b>Connections</b>.
         </div>
       )}
 
@@ -83,15 +101,20 @@ export default function AgentsView({
         <div className="table-card">
           {workspace.panelAgents.map((agent) => (
             <article key={agent.key} className={agent.enabled ? 'agent-row' : 'agent-row off'}>
-              <header className="agent-row-head">
-                <div>
-                  <h2 className="agent-name">
-                    {agent.name}
-                    {!agent.builtin && <span className="chip">yours</span>}
-                    {agent.modified && <span className="chip">modified</span>}
-                  </h2>
-                  {agent.purpose && <p className="agent-purpose">{agent.purpose}</p>}
-                </div>
+              <div className="agent-row-main">
+                <h2 className="agent-name">
+                  {agent.name}
+                  {!agent.builtin && <span className="chip">yours</span>}
+                  {agent.modified && <span className="chip">modified</span>}
+                </h2>
+                {agent.purpose && <p className="agent-purpose">{agent.purpose}</p>}
+                <span className="agent-last">{lastResult(workspace, agent)}</span>
+              </div>
+
+              <div className="agent-row-controls">
+                <TargetPicker agent={agent} workspace={workspace} busy={busy} act={act} />
+                {editButton(agent)}
+                {promptToggle(agent.key, agent.name)}
                 <button
                   type="button"
                   role="switch"
@@ -103,17 +126,6 @@ export default function AgentsView({
                 >
                   <span className="switch-thumb" />
                 </button>
-              </header>
-
-              <div className="agent-row-foot">
-                <span className="agent-last">{lastResult(workspace, agent)}</span>
-                <span className="row">
-                  <TargetPicker agent={agent} workspace={workspace} busy={busy} act={act} />
-                  <button className="button ghost small" type="button" onClick={() => setEditing(agent)}>
-                    Edit
-                  </button>
-                  {promptToggle(agent.key)}
-                </span>
               </div>
 
               {openKey === agent.key && <pre className="prompt-box">{agent.prompt}</pre>}
@@ -126,7 +138,6 @@ export default function AgentsView({
         <>
           <Singleton
             agent={workspace.consolidator}
-            note="Tie-break rules live in this prompt, not in configuration switches. You can override any individual ruling anyway."
             open={openKey === workspace.consolidator.key}
             toggle={promptToggle}
             onEdit={() => setEditing(workspace.consolidator)}
@@ -136,7 +147,6 @@ export default function AgentsView({
           />
           <Singleton
             agent={workspace.retrospective}
-            note="Every rule it proposes is written to Memory switched off. Nothing it decides reaches a future review until you switch that rule on."
             open={openKey === workspace.retrospective.key}
             toggle={promptToggle}
             onEdit={() => setEditing(workspace.retrospective)}
@@ -214,7 +224,6 @@ function TargetPicker({
 /** One of the two roles there is exactly one of: no switch, no delete, just a prompt. */
 function Singleton({
   agent,
-  note,
   open,
   toggle,
   onEdit,
@@ -223,9 +232,8 @@ function Singleton({
   act,
 }: {
   agent: PanelAgent;
-  note: string;
   open: boolean;
-  toggle: (key: string) => React.ReactNode;
+  toggle: (key: string, name: string) => React.ReactNode;
   onEdit: () => void;
   workspace: Workspace;
   busy: boolean;
@@ -233,22 +241,19 @@ function Singleton({
 }) {
   return (
     <section className="consolidator">
-      <div className="memory-section-head">
-        <h2 className="section-title">{agent.name}</h2>
-        <p className="section-blurb">{agent.purpose}</p>
-      </div>
+      <h2 className="section-title">{agent.name}</h2>
 
       <div className="table-card">
         <article className="agent-row">
-          <div className="agent-row-foot">
-            <span className="agent-last">{note}</span>
-            <span className="row">
-              <TargetPicker agent={agent} workspace={workspace} busy={busy} act={act} />
-              <button className="button ghost small" type="button" onClick={onEdit}>
-                Edit
-              </button>
-              {toggle(agent.key)}
-            </span>
+          <div className="agent-row-main">
+            <p className="agent-purpose">{agent.purpose}</p>
+          </div>
+          <div className="agent-row-controls">
+            <TargetPicker agent={agent} workspace={workspace} busy={busy} act={act} />
+            <button className="icon-button" type="button" title="Edit" aria-label={`Edit ${agent.name}`} onClick={onEdit}>
+              <Icon name="edit" />
+            </button>
+            {toggle(agent.key, agent.name)}
           </div>
           {open && <pre className="prompt-box">{agent.prompt}</pre>}
         </article>
@@ -258,30 +263,18 @@ function Singleton({
 }
 
 /** What this agent reported on the most recent completed pass, on any review. */
+/** What this agent reported on the most recent completed pass. The pass it came
+ *  from is named once in the page header, so the row carries only the count. */
 function lastResult(workspace: Workspace, agent: PanelAgent): React.ReactNode {
-  if (!agent.enabled) return 'Switched off. It will not run on the next pass.';
+  if (!agent.enabled) return 'Switched off';
   const pass = workspace.lastPass;
   const result = pass?.agents.find((entry) => entry.key === agent.key);
-  if (!pass || !result) return 'Has not run yet.';
-  const where = <span className="agent-where"> on {pass.reviewName}</span>;
-  if (result.error) {
-    return (
-      <>
-        Last pass: <b className="nothing">did not answer</b>
-        {where}
-      </>
-    );
-  }
-  return (
-    <>
-      Last pass:{' '}
-      {result.findings === 0 ? (
-        <b className="nothing">nothing found</b>
-      ) : (
-        <b>{result.findings} findings</b>
-      )}
-      {where}
-    </>
+  if (!pass || !result) return 'Not run yet';
+  if (result.error) return <b className="nothing">did not answer</b>;
+  return result.findings === 0 ? (
+    <b className="nothing">nothing found</b>
+  ) : (
+    <b>{result.findings} findings</b>
   );
 }
 

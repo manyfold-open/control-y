@@ -1,9 +1,9 @@
-# Turn Zero
+# Ctrl+Y
 
 ## Product purpose
 
 A fund manager sends a deliverable out for review and gets it back with comments.
-Then again. Then again. Turn Zero collapses that loop: a panel of agents reads the
+Then again. Then again. Ctrl+Y collapses that loop: a panel of agents reads the
 deliverable against its source documents, a consolidator merges what they found into
 one list of issues, each issue is assigned to the one person who can answer it, and
 the replies are pasted back so the panel can run again.

@@ -1,5 +1,5 @@
 /**
- * Turn Zero — the shell.
+ * Ctrl+Y — the shell.
  *
  * A workspace app: a persistent left rail for workspace-level navigation and a
  * single working area beside it. Routing is location.hash, no router dependency
@@ -19,6 +19,7 @@ import ChatView from './components/ChatView';
 import SettingsView from './components/SettingsView';
 import PasswordGate from './components/PasswordGate';
 import Icon from './components/Icon';
+import Logo from './components/Logo';
 import ReviewsView from './views/ReviewsView';
 import ReviewDetailView from './views/ReviewDetailView';
 import PeopleView from './views/PeopleView';
@@ -106,8 +107,7 @@ export default function App() {
     <div className="app">
       <nav className="rail" aria-label="Workspace">
         <div className="rail-brand">
-          <img className="rail-mark" src="/ctrl-y-badge.png" alt="" aria-hidden="true" />
-          <img className="rail-wordmark" src="/ctrl-y-logo-wordmark.png" alt="Ctrl + Y" />
+          <Logo />
         </div>
 
         <div className="rail-nav">
