@@ -963,6 +963,42 @@ code {
 
 .consolidator { margin-top: var(--space-xxl); }
 
+/* Reads as a label until you reach for it — the default ("any") is the common
+   case, and a full form control on every row would shout over the prompts. */
+.agent-target {
+  max-width: 190px;
+  padding: 2px var(--space-xs);
+  border: 1px solid transparent; border-radius: var(--radius-sm);
+  background: none; color: var(--stone);
+  font: 400 12px/1.4 var(--font-sans); cursor: pointer;
+}
+.agent-target:hover { border-color: var(--hairline); color: var(--ink); }
+.agent-target:disabled { cursor: default; opacity: 0.6; }
+.agent-target.stale { color: var(--material); border-color: color-mix(in srgb, var(--material) 40%, transparent); }
+
+/* ═══ Retrospective ═════════════════════════════════════════════════════════ */
+
+/* Sits inside the review header, so it carries its own top rule rather than
+   the section margin the Agents page uses. */
+.retro { margin-top: var(--space-lg); }
+.memory-text.as-text { cursor: default; }
+.memory-text.as-text:hover { color: var(--slate); }
+.retro-summary { margin: 0; color: var(--slate); font: 400 14px/1.7 var(--font-sans); }
+.retro-columns { grid-template-columns: 1fr 1fr; gap: var(--space-lg); }
+.retro-heading {
+  margin: 0 0 var(--space-xxs);
+  color: var(--stone);
+  font: 600 11px/1.4 var(--font-sans);
+  letter-spacing: 0.06em; text-transform: uppercase;
+}
+.retro-list { margin: 0; padding-left: 1.1em; color: var(--slate); font: 400 13px/1.7 var(--font-sans); }
+.retro-list li { margin-bottom: var(--space-xxs); }
+.retro-state { color: var(--stone); font-size: 12px; }
+
+@media (max-width: 720px) {
+  .retro-columns { grid-template-columns: 1fr; }
+}
+
 /* ═══ Inherited connect / chat / settings ═══════════════════════════════════ */
 
 /* No box. The page is already the frame — a card inside it was a container

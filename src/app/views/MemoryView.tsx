@@ -64,7 +64,8 @@ export default function MemoryView({
           <h1 className="page-title">Memory</h1>
           <p className="page-sub">
             What the workspace carries between reviews, so the same thing is not re-litigated every period. Written as
-            rules, not notes.
+            rules, not notes. Rules the retrospective proposes arrive switched off — they apply to nothing until you
+            switch them on.
           </p>
         </div>
         <button className="button primary" type="button" onClick={() => setEditing('new')}>
@@ -116,6 +117,7 @@ export default function MemoryView({
                             {inScope ? 'In scope' : 'Out of scope'} on {review.name}
                           </button>
                         )}
+                        {!entry.enabled && <span className="retro-state">Not in use yet</span>}
                         <button
                           type="button"
                           role="switch"

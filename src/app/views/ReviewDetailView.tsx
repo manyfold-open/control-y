@@ -27,6 +27,7 @@ import { errorText, formatBytes, formatWhen, initials, useCopy, usePoll, useReso
 import Convergence from '../components/Convergence';
 import Icon from '../components/Icon';
 import Modal, { Field } from '../components/Modal';
+import RetrospectivePanel from '../components/RetrospectivePanel';
 
 type FilterKey = 'open' | 'mine' | 'resolved';
 
@@ -111,7 +112,8 @@ export default function ReviewDetailView({
 
   const running = data?.review.running ?? false;
   const linking = data?.feedback.some((batch) => batch.status === 'linking') ?? false;
-  usePoll(running || linking, 2500, () => {
+  const retrospecting = data?.retrospective?.status === 'running';
+  usePoll(running || linking || retrospecting, 2500, () => {
     void reload(true);
     void reloadWorkspace(true);
   });
@@ -271,6 +273,9 @@ export default function ReviewDetailView({
           <div className="notice error">
             Pass {failedPass.number} did not complete. {failedPass.error} No issue was changed.
           </div>
+        )}
+        {data.retrospective && (
+          <RetrospectivePanel retro={data.retrospective} memory={data.memory} busy={busy} act={act} />
         )}
       </header>
 
@@ -960,6 +965,11 @@ function ReviewSettings({
               className="button small"
               type="button"
               disabled={busy}
+              title={
+                review.status === 'open'
+                  ? 'Closing runs the retrospective: it writes the close-out and proposes rules to carry forward, all switched off until you accept them.'
+                  : 'Reopening leaves the existing retrospective in place.'
+              }
               onClick={() =>
                 void act(() =>
                   send('PATCH', `/api/reviews/${review.id}`, {
