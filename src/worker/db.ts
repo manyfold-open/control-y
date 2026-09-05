@@ -147,7 +147,8 @@ CREATE TABLE IF NOT EXISTS review_memory (
   PRIMARY KEY (review_id, entry_id)
 );
 
--- Source documents the panel reads. Text only, held inline.
+-- Source documents the panel reads. Text is held inline; binary files are stored as
+-- a marked JSON envelope containing base64 bytes and a MIME type.
 CREATE TABLE IF NOT EXISTS documents (
   id         TEXT PRIMARY KEY,
   review_id  TEXT NOT NULL,

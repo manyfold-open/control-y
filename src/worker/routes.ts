@@ -233,9 +233,20 @@ turnZero.post('/reviews/:id/documents', async (c) => {
   const reviewId = c.req.param('id');
   await store.getReviewSummary(c.env, reviewId);
   const body = await readBody(c.req);
+  const rawContentEncoding = body.contentEncoding === undefined ? 'text' : body.contentEncoding;
+  if (rawContentEncoding !== 'text' && rawContentEncoding !== 'base64') {
+    bad('"contentEncoding" must be "text" or "base64".');
+  }
+  const contentEncoding = rawContentEncoding as 'text' | 'base64';
+  const content = required(body, 'content', DOCUMENT_MAX_CHARS);
+  if (contentEncoding === 'base64' && (content.length % 4 !== 0 || !/^[A-Za-z0-9+/]*={0,2}$/.test(content))) {
+    bad('"content" must be valid base64 when "contentEncoding" is "base64".');
+  }
   const document = await store.addDocument(c.env, reviewId, {
     name: required(body, 'name', 200),
-    content: required(body, 'content', DOCUMENT_MAX_CHARS),
+    content,
+    contentEncoding,
+    mediaType: optional(body, 'mediaType', 200) ?? (contentEncoding === 'base64' ? 'application/octet-stream' : 'text/plain'),
   });
   return c.json({ document }, 201);
 });

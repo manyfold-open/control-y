@@ -536,34 +536,72 @@ export async function listDocuments(env: Env, reviewId: string): Promise<ReviewD
   }));
 }
 
-/** Full text, for the panel only. Never returned to the browser. */
+/** Text and inline file bytes for the panel only. Never returned to the browser. */
+export interface PanelDocument {
+  name: string;
+  content: string;
+  encoding: 'text' | 'base64';
+  mediaType: string;
+}
+
+const BINARY_DOCUMENT_PREFIX = 'control-y-file-v1:';
+
 export async function readDocuments(
   env: Env,
   reviewId: string,
-): Promise<{ name: string; content: string }[]> {
+): Promise<PanelDocument[]> {
   const { results } = await env.DB.prepare(
     'SELECT name, content FROM documents WHERE review_id = ? ORDER BY created_at',
   )
     .bind(reviewId)
     .all<{ name: string; content: string }>();
-  return results ?? [];
+  return (results ?? []).map((row) => {
+    if (row.content.startsWith(BINARY_DOCUMENT_PREFIX)) {
+      try {
+        const payload = JSON.parse(row.content.slice(BINARY_DOCUMENT_PREFIX.length)) as {
+          content?: unknown;
+          mediaType?: unknown;
+        };
+        if (typeof payload.content === 'string') {
+          return {
+            name: row.name,
+            content: payload.content,
+            encoding: 'base64' as const,
+            mediaType: typeof payload.mediaType === 'string' ? payload.mediaType : 'application/octet-stream',
+          };
+        }
+      } catch {
+        /* A malformed envelope is treated as legacy text rather than crashing a pass. */
+      }
+    }
+    return { name: row.name, content: row.content, encoding: 'text' as const, mediaType: 'text/plain' };
+  });
 }
 
 export async function addDocument(
   env: Env,
   reviewId: string,
-  fields: { name: string; content: string },
+  fields: { name: string; content: string; contentEncoding?: 'text' | 'base64'; mediaType?: string },
 ): Promise<ReviewDocument> {
   const id = `d-${crypto.randomUUID()}`;
   const createdAt = now();
-  const bytes = new TextEncoder().encode(fields.content).length;
+  const encoding = fields.contentEncoding ?? 'text';
+  const storedContent = encoding === 'base64'
+    ? `${BINARY_DOCUMENT_PREFIX}${JSON.stringify({ content: fields.content, mediaType: fields.mediaType ?? 'application/octet-stream' })}`
+    : fields.content;
+  const bytes = encoding === 'base64' ? base64ByteLength(fields.content) : new TextEncoder().encode(fields.content).length;
   await env.DB.prepare(
     'INSERT INTO documents (id, review_id, name, content, bytes, created_at) VALUES (?, ?, ?, ?, ?, ?)',
   )
-    .bind(id, reviewId, fields.name, fields.content, bytes, createdAt)
+    .bind(id, reviewId, fields.name, storedContent, bytes, createdAt)
     .run();
   await touchReview(env, reviewId);
   return { id, name: fields.name, bytes, createdAt };
+}
+
+function base64ByteLength(value: string): number {
+  const padding = value.endsWith('==') ? 2 : value.endsWith('=') ? 1 : 0;
+  return Math.max(0, Math.floor((value.length * 3) / 4) - padding);
 }
 
 export async function deleteDocument(env: Env, reviewId: string, documentId: string): Promise<void> {

@@ -795,7 +795,20 @@ function RememberDialog({
 
 /* ── Review settings and documents ─────────────────────────────────────────── */
 
-const TEXT_FILE = /\.(txt|csv|tsv|md|json|log|xml|yaml|yml)$/i;
+const TEXT_FILE = /\.(txt|csv|tsv|md|json|log|xml|yaml|yml|html|htm|css|js|jsx|ts|tsx|sql|rtf)$/i;
+const VIDEO_FILE = /\.(3gp|avi|flv|m2ts|m4v|mkv|mov|mp4|mpeg|mpg|ogv|vob|webm|wmv)$/i;
+
+const isVideoFile = (file: File): boolean => file.type.toLowerCase().startsWith('video/') || VIDEO_FILE.test(file.name);
+const isTextFile = (file: File): boolean => file.type.toLowerCase().startsWith('text/') || TEXT_FILE.test(file.name);
+
+function bytesToBase64(bytes: Uint8Array): string {
+  let binary = '';
+  const chunkSize = 0x8000;
+  for (let offset = 0; offset < bytes.length; offset += chunkSize) {
+    binary += String.fromCharCode(...bytes.subarray(offset, offset + chunkSize));
+  }
+  return btoa(binary);
+}
 
 function ReviewSettings({
   detail,
@@ -815,7 +828,10 @@ function ReviewSettings({
   const [counterparty, setCounterparty] = useState(review.counterparty);
   const [period, setPeriod] = useState(review.period);
   const [docName, setDocName] = useState('');
-  const [docText, setDocText] = useState('');
+  const [docContent, setDocContent] = useState('');
+  const [docEncoding, setDocEncoding] = useState<'text' | 'base64'>('text');
+  const [docMediaType, setDocMediaType] = useState('');
+  const [binaryFile, setBinaryFile] = useState<{ name: string; bytes: number; mediaType: string } | null>(null);
   const [readError, setReadError] = useState('');
   const [confirmDelete, setConfirmDelete] = useState(false);
 
@@ -823,13 +839,34 @@ function ReviewSettings({
 
   const pickFile = async (file: File | undefined) => {
     if (!file) return;
-    if (!TEXT_FILE.test(file.name)) {
-      setReadError('Text formats only — .txt, .csv, .md, .json. Paste an extract for anything else.');
+    if (isVideoFile(file)) {
+      setReadError('Video files are not supported yet. Choose any other file type.');
       return;
     }
-    setReadError('');
-    setDocName(file.name);
-    setDocText(await file.text());
+    try {
+      setReadError('');
+      setDocName(file.name);
+      setDocMediaType(file.type || 'application/octet-stream');
+      if (isTextFile(file)) {
+        setDocEncoding('text');
+        setBinaryFile(null);
+        setDocContent(await file.text());
+      } else {
+        setDocEncoding('base64');
+        setBinaryFile({ name: file.name, bytes: file.size, mediaType: file.type || 'application/octet-stream' });
+        setDocContent(bytesToBase64(new Uint8Array(await file.arrayBuffer())));
+      }
+    } catch {
+      setReadError('Could not read that file. Try choosing it again or paste its contents.');
+    }
+  };
+
+  const clearDocumentDraft = () => {
+    setDocName('');
+    setDocContent('');
+    setDocEncoding('text');
+    setDocMediaType('');
+    setBinaryFile(null);
   };
 
   return (
@@ -860,33 +897,44 @@ function ReviewSettings({
             <Field label="Add a document">
               <input value={docName} onChange={(event) => setDocName(event.target.value)} placeholder="staging.xlsx (extract)" />
             </Field>
-            <Field label="Its text" hint="Paste an extract, or load a text file.">
-              <textarea rows={5} value={docText} onChange={(event) => setDocText(event.target.value)} />
-            </Field>
+            {binaryFile ? (
+              <div className="file-preview" aria-live="polite">
+                <strong>{binaryFile.name}</strong>
+                <span>{formatBytes(binaryFile.bytes)} · Ready to attach · {binaryFile.mediaType}</span>
+              </div>
+            ) : (
+              <Field label="Its text" hint="Paste an extract, or load any non-video file.">
+                <textarea rows={5} value={docContent} onChange={(event) => setDocContent(event.target.value)} />
+              </Field>
+            )}
             {readError && <div className="notice error">{readError}</div>}
             <div className="inline-form-foot">
               <label className="button small file-button">
                 Load a file
                 <input
                   type="file"
-                  accept=".txt,.csv,.tsv,.md,.json,.log,.xml,.yaml,.yml"
-                  onChange={(event) => void pickFile(event.target.files?.[0])}
+                  accept="*/*"
+                  onChange={(event) => {
+                    void pickFile(event.target.files?.[0]);
+                    event.currentTarget.value = '';
+                  }}
                 />
               </label>
               <button
                 className="button primary small"
                 type="button"
-                disabled={busy || !docName.trim() || !docText.trim()}
+                disabled={busy || !docName.trim() || !docContent.trim()}
                 onClick={() =>
                   void act(() =>
                     send('POST', `/api/reviews/${review.id}/documents`, {
                       name: docName.trim(),
-                      content: docText,
+                      content: docContent,
+                      contentEncoding: docEncoding,
+                      ...(docMediaType ? { mediaType: docMediaType } : {}),
                     }),
                   ).then((ok) => {
                     if (!ok) return;
-                    setDocName('');
-                    setDocText('');
+                    clearDocumentDraft();
                   })
                 }
               >
