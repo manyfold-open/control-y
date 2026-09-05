@@ -232,6 +232,22 @@ export interface Pass {
 }
 
 /**
+ * Events the Worker streams to the browser while a pass runs (SSE `data:` payloads).
+ *
+ * They carry no issue content: the browser re-reads the review for that, the same
+ * way it does after any other write. What the stream is actually for is holding the
+ * Worker invocation open for the length of the run — a pass is several agent turns
+ * end to end, and work that outlives its own response is cut off long before that.
+ * Saying how far along the run is comes free with keeping it alive.
+ */
+export type PassEvent =
+  | { type: 'start'; pass: Pass }
+  | { type: 'stage'; stage: 'reviewers' | 'consolidator'; done: number; total: number }
+  | { type: 'agent'; key: string; name: string; findings: number | null; error: string | null }
+  | { type: 'done'; openCount: number | null }
+  | { type: 'error'; message: string };
+
+/**
  * One rule the retrospective proposes carrying into the next review.
  *
  * `memoryId` is a real entry in global memory, written switched OFF: it is listed
@@ -328,4 +344,8 @@ export interface Workspace {
   lastPass: { reviewName: string; finishedAt: string; agents: PassAgentResult[] } | null;
   /** Is there a connected Manyfold agent the panel can actually run on? */
   panelReady: boolean;
+  /** Are the R2 credentials set? When false the file picker is hidden, not broken. */
+  uploadsEnabled: boolean;
+  /** Largest file the deployment accepts, so the browser can refuse before reading. */
+  maxUploadBytes: number;
 }

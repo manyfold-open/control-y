@@ -39,11 +39,28 @@
       "database_id": "2593ce02-4386-4306-8bc5-d9595b1bdaa4"
     }
   ],
+  // Uploaded documents. The browser PUTs straight to R2 through a presigned URL, so the
+  // Worker only ever uses this binding to confirm, stream back and delete objects.
+  //
+  // "remote": true is load-bearing for `npm run dev`: the presigned URL always points at
+  // real R2, so a locally simulated bucket would never see the object the browser just
+  // uploaded. preview_bucket_name keeps that dev traffic out of the production bucket.
+  "r2_buckets": [
+    {
+      "binding": "DOCS",
+      "bucket_name": "control-y-docs",
+      "preview_bucket_name": "control-y-docs-dev",
+      "remote": true
+    }
+  ],
   "vars": {
     // Manyfold API base. Point at https://api-staging.manyfold.ai via .dev.vars for local dev.
     "MANYFOLD_API_BASE_URL": "https://api.manyfold.ai",
     // "production" enforces https-only and no-private-IP checks on agent URLs.
-    "ENVIRONMENT": "production"
+    "ENVIRONMENT": "production",
+    // Which bucket the presigned URLs address. Must name the same bucket the DOCS binding
+    // resolves to, so .dev.vars overrides it to control-y-docs-dev for local development.
+    "R2_BUCKET": "control-y-docs"
   }
   // Optional hardening, neither is required to deploy:
   //   npx wrangler secret put ADMIN_PASSWORD          # locks the app behind a password

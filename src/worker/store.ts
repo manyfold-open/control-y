@@ -37,6 +37,7 @@ import type {
 import { readEvidence } from '../shared/evidence';
 import { HttpError, type Env } from './types';
 import { now } from './db';
+import { deleteReviewObjects } from './r2';
 
 /* ───────── parsing helpers ───────── */
 
@@ -405,6 +406,9 @@ const toPass = (row: PassRow): Pass => {
 };
 
 export async function listReviews(env: Env): Promise<ReviewSummary[]> {
+  // Before reading `running` off any of these rows, settle the ones that are only
+  // still running because the Worker that was running them no longer exists.
+  await reapStaleRuns(env);
   const [reviews, docs, open, remembered, passes, enabled] = await Promise.all([
     env.DB.prepare(
       'SELECT id, name, counterparty, period, status, updated_at FROM reviews ORDER BY updated_at DESC',
@@ -511,7 +515,14 @@ export async function updateReview(
 }
 
 export async function deleteReview(env: Env, id: string): Promise<void> {
+  // Before the rows, because the rows are what say which objects exist. Dropping
+  // them first would leave every uploaded file in the bucket with nothing left
+  // pointing at it.
+  await deleteReviewObjects(env, id);
   await env.DB.batch([
+    env.DB.prepare(
+      'DELETE FROM document_objects WHERE document_id IN (SELECT id FROM documents WHERE review_id = ?)',
+    ).bind(id),
     env.DB.prepare(
       'DELETE FROM feedback_links WHERE batch_id IN (SELECT id FROM feedback_batches WHERE review_id = ?)',
     ).bind(id),
@@ -602,78 +613,146 @@ export async function listDocuments(env: Env, reviewId: string): Promise<ReviewD
   }));
 }
 
-/** Text and inline file bytes for the panel only. Never returned to the browser. */
-export interface PanelDocument {
-  name: string;
-  content: string;
-  encoding: 'text' | 'base64';
-  mediaType: string;
+/**
+ * What the panel reads. Never returned to the browser.
+ *
+ * Two shapes, because they reach the agent by two different routes: text is
+ * inlined into the prompt under a character budget, a file is attached to the
+ * message and fetched by the agent from R2.
+ */
+export type PanelDocument =
+  | { kind: 'text'; name: string; content: string }
+  | { kind: 'file'; name: string; mediaType: string; key: string };
+
+/**
+ * Files used to be base64'd into this column behind this prefix, before uploads
+ * moved to R2. Rows written then are still read; none are written now.
+ */
+const LEGACY_BINARY_PREFIX = 'control-y-file-v1:';
+
+/** The base64 of a legacy inline file, or null when the envelope is unreadable. */
+export function readLegacyEnvelope(content: string): { base64: string; mediaType: string } | null {
+  if (!content.startsWith(LEGACY_BINARY_PREFIX)) return null;
+  try {
+    const payload = JSON.parse(content.slice(LEGACY_BINARY_PREFIX.length)) as {
+      content?: unknown;
+      mediaType?: unknown;
+    };
+    if (typeof payload.content !== 'string') return null;
+    return {
+      base64: payload.content,
+      mediaType: typeof payload.mediaType === 'string' ? payload.mediaType : 'application/octet-stream',
+    };
+  } catch {
+    return null;
+  }
 }
 
-const BINARY_DOCUMENT_PREFIX = 'control-y-file-v1:';
+export const isLegacyBinary = (content: string): boolean => content.startsWith(LEGACY_BINARY_PREFIX);
 
-export async function readDocuments(
-  env: Env,
-  reviewId: string,
-): Promise<PanelDocument[]> {
+/**
+ * Documents for one pass.
+ *
+ * A row with a document_objects match is a file in R2. Everything else is inline
+ * text — except a legacy envelope, which is skipped: it is base64 with a sentinel
+ * glued to the front, and feeding that to a reviewer as prose would burn the
+ * document budget on noise. Skipping loses one document, not the pass.
+ */
+export async function readDocuments(env: Env, reviewId: string): Promise<PanelDocument[]> {
   const { results } = await env.DB.prepare(
-    'SELECT name, content FROM documents WHERE review_id = ? ORDER BY created_at',
+    `SELECT d.name, d.content, o.r2_key, o.media_type
+     FROM documents d
+     LEFT JOIN document_objects o ON o.document_id = d.id
+     WHERE d.review_id = ?
+     ORDER BY d.created_at`,
   )
     .bind(reviewId)
-    .all<{ name: string; content: string }>();
-  return (results ?? []).map((row) => {
-    if (row.content.startsWith(BINARY_DOCUMENT_PREFIX)) {
-      try {
-        const payload = JSON.parse(row.content.slice(BINARY_DOCUMENT_PREFIX.length)) as {
-          content?: unknown;
-          mediaType?: unknown;
-        };
-        if (typeof payload.content === 'string') {
-          return {
-            name: row.name,
-            content: payload.content,
-            encoding: 'base64' as const,
-            mediaType: typeof payload.mediaType === 'string' ? payload.mediaType : 'application/octet-stream',
-          };
-        }
-      } catch {
-        /* A malformed envelope is treated as legacy text rather than crashing a pass. */
-      }
+    .all<{ name: string; content: string; r2_key: string | null; media_type: string | null }>();
+
+  const documents: PanelDocument[] = [];
+  for (const row of results ?? []) {
+    if (row.r2_key) {
+      documents.push({
+        kind: 'file',
+        name: row.name,
+        mediaType: row.media_type ?? 'application/octet-stream',
+        key: row.r2_key,
+      });
+    } else if (!isLegacyBinary(row.content)) {
+      documents.push({ kind: 'text', name: row.name, content: row.content });
     }
-    return { name: row.name, content: row.content, encoding: 'text' as const, mediaType: 'text/plain' };
-  });
+  }
+  return documents;
 }
 
-export async function addDocument(
+/** Pasted text, held inline. Small, and it is prompt material rather than a file. */
+export async function addTextDocument(
   env: Env,
   reviewId: string,
-  fields: { name: string; content: string; contentEncoding?: 'text' | 'base64'; mediaType?: string },
+  fields: { name: string; content: string },
 ): Promise<ReviewDocument> {
   const id = `d-${crypto.randomUUID()}`;
   const createdAt = now();
-  const encoding = fields.contentEncoding ?? 'text';
-  const storedContent = encoding === 'base64'
-    ? `${BINARY_DOCUMENT_PREFIX}${JSON.stringify({ content: fields.content, mediaType: fields.mediaType ?? 'application/octet-stream' })}`
-    : fields.content;
-  const bytes = encoding === 'base64' ? base64ByteLength(fields.content) : new TextEncoder().encode(fields.content).length;
+  const bytes = new TextEncoder().encode(fields.content).length;
   await env.DB.prepare(
     'INSERT INTO documents (id, review_id, name, content, bytes, created_at) VALUES (?, ?, ?, ?, ?, ?)',
   )
-    .bind(id, reviewId, fields.name, storedContent, bytes, createdAt)
+    .bind(id, reviewId, fields.name, fields.content, bytes, createdAt)
     .run();
   await touchReview(env, reviewId);
   return { id, name: fields.name, bytes, createdAt };
 }
 
-function base64ByteLength(value: string): number {
-  const padding = value.endsWith('==') ? 2 : value.endsWith('=') ? 1 : 0;
-  return Math.max(0, Math.floor((value.length * 3) / 4) - padding);
+/**
+ * Records a file the browser already uploaded to R2. `bytes` is R2's own count,
+ * taken from the object rather than from the request, so the size shown is the
+ * size stored. The id was minted when the upload URL was issued, so it matches
+ * the key that was signed.
+ */
+export async function addUploadedDocument(
+  env: Env,
+  reviewId: string,
+  fields: { id: string; name: string; key: string; mediaType: string; bytes: number },
+): Promise<ReviewDocument> {
+  const createdAt = now();
+  await env.DB.batch([
+    env.DB.prepare(
+      "INSERT INTO documents (id, review_id, name, content, bytes, created_at) VALUES (?, ?, ?, '', ?, ?)",
+    ).bind(fields.id, reviewId, fields.name, fields.bytes, createdAt),
+    env.DB.prepare(
+      'INSERT INTO document_objects (document_id, r2_key, media_type) VALUES (?, ?, ?)',
+    ).bind(fields.id, fields.key, fields.mediaType),
+  ]);
+  await touchReview(env, reviewId);
+  return { id: fields.id, name: fields.name, bytes: fields.bytes, createdAt };
+}
+
+/** The R2 key for one document, or null when its content is inline. */
+export async function documentObject(
+  env: Env,
+  reviewId: string,
+  documentId: string,
+): Promise<{ name: string; key: string; mediaType: string } | null> {
+  const row = await env.DB.prepare(
+    `SELECT d.name, o.r2_key, o.media_type
+     FROM documents d
+     JOIN document_objects o ON o.document_id = d.id
+     WHERE d.id = ? AND d.review_id = ?`,
+  )
+    .bind(documentId, reviewId)
+    .first<{ name: string; r2_key: string; media_type: string }>();
+  return row ? { name: row.name, key: row.r2_key, mediaType: row.media_type } : null;
 }
 
 export async function deleteDocument(env: Env, reviewId: string, documentId: string): Promise<void> {
-  await env.DB.prepare('DELETE FROM documents WHERE id = ? AND review_id = ?')
-    .bind(documentId, reviewId)
-    .run();
+  const object = await documentObject(env, reviewId, documentId);
+  await env.DB.batch([
+    env.DB.prepare('DELETE FROM document_objects WHERE document_id = ?').bind(documentId),
+    env.DB.prepare('DELETE FROM documents WHERE id = ? AND review_id = ?').bind(documentId, reviewId),
+  ]);
+  // After the rows: an orphaned object is recoverable, a row pointing at a
+  // deleted object is a download that 404s.
+  if (object) await env.DOCS.delete(object.key);
   await touchReview(env, reviewId);
 }
 
@@ -836,6 +915,98 @@ export async function updateIssue(
   const { issue, reviewId } = await getIssue(env, id);
   await touchReview(env, reviewId);
   return issue;
+}
+
+/* ───────── liveness of background runs ───────── */
+
+/**
+ * A pass, a close-out and a pasted reply all run outside the request that started
+ * them, and all three latch a row to `running` / `linking` while they do. Every
+ * failure they can *observe* is written to that row by a catch block. The failure
+ * they cannot observe is the Worker itself going away mid-run — the client
+ * disconnecting, a deploy rolling the isolate, or the ~30s ceiling on work that
+ * outlives its response. Nothing runs after that, so the row stays latched, and a
+ * latched row blocks every future run on that review. Forever, until now.
+ *
+ * So a run beats while it lives, and a beat that stops is read as a run that died.
+ *
+ * `HEARTBEAT_MS` is the beat; `STALE_MS` is how long a silence has to last before
+ * it counts. The gap between them absorbs an ordinary slow write — a run is only
+ * declared dead after several beats in a row fail to land.
+ */
+const HEARTBEAT_MS = 10_000;
+const STALE_MS = 60_000;
+
+/**
+ * Marks a background run alive until it stops. Call the returned function in a
+ * `finally`: a beat left running would keep declaring a finished run alive.
+ *
+ * Beats are written for their effect and never awaited — a run must not fail
+ * because a liveness write was slow, and the reaper's tolerance already covers
+ * one that is lost.
+ */
+export function beat(env: Env, id: string): () => void {
+  const write = () => {
+    void env.DB.prepare(
+      `INSERT INTO run_heartbeats (id, beat_at) VALUES (?, ?)
+       ON CONFLICT (id) DO UPDATE SET beat_at = excluded.beat_at`,
+    )
+      .bind(id, now())
+      .run()
+      .catch(() => undefined);
+  };
+  write();
+  const timer = setInterval(write, HEARTBEAT_MS);
+  return () => clearInterval(timer);
+}
+
+/**
+ * Fails every run that stopped beating, so the review it latched becomes runnable
+ * again.
+ *
+ * `COALESCE(beat, started_at)` is what makes this safe on a run that has only just
+ * claimed its row and not yet beaten, and on rows written by a build from before
+ * heartbeats existed: with no beat, the row's own start time is the clock.
+ *
+ * Called on the read paths rather than on a schedule: the review page asks for
+ * this review every few seconds while anything is running, so the recovery lands
+ * within a beat of someone actually looking. The four statements below match
+ * nothing on the ordinary path.
+ */
+export async function reapStaleRuns(env: Env): Promise<void> {
+  const cutoff = new Date(Date.now() - STALE_MS).toISOString();
+  const finishedAt = now();
+  await env.DB.batch([
+    env.DB.prepare(
+      `UPDATE passes SET status = 'failed', error = ?, finished_at = ?
+        WHERE status = 'running'
+          AND COALESCE((SELECT beat_at FROM run_heartbeats WHERE id = passes.id), started_at) < ?`,
+    ).bind(
+      'The pass stopped before it finished, so nothing was written. Run it again.',
+      finishedAt,
+      cutoff,
+    ),
+    env.DB.prepare(
+      `UPDATE retrospectives SET status = 'failed', error = ?, finished_at = ?
+        WHERE status = 'running'
+          AND COALESCE((SELECT beat_at FROM run_heartbeats WHERE id = retrospectives.id), started_at) < ?`,
+    ).bind(
+      'The close-out stopped before it finished. Nothing was written to memory.',
+      finishedAt,
+      cutoff,
+    ),
+    env.DB.prepare(
+      `UPDATE feedback_batches SET status = 'failed', error = ?
+        WHERE status = 'linking'
+          AND COALESCE((SELECT beat_at FROM run_heartbeats WHERE id = feedback_batches.id), received_at) < ?`,
+    ).bind(
+      'The panel stopped before it finished reading this reply. Paste it again, or delete it and run the pass without it.',
+      cutoff,
+    ),
+    // Anything this old belongs to a run that has since finished or just been
+    // failed above; a live run has written a newer beat by definition.
+    env.DB.prepare('DELETE FROM run_heartbeats WHERE beat_at < ?').bind(cutoff),
+  ]);
 }
 
 /* ───────── passes ───────── */

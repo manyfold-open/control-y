@@ -19,3 +19,21 @@
 # Set this (>=32 chars) to keep the key out of the database:
 #   npx wrangler secret put CONFIG_ENCRYPTION_KEY
 # CONFIG_ENCRYPTION_KEY=
+
+# ── Document uploads (R2) ─────────────────────────────────────────────────────
+# Required to upload files. Without them the app still runs and every other
+# feature works; only picking a file fails, with a message saying so.
+#
+# The browser uploads straight to R2 through a presigned URL, so the Worker signs
+# with S3 API credentials. Create them in the dashboard under
+# R2 > Manage R2 API Tokens > Object Read & Write, scoped to the buckets below:
+#   npx wrangler secret put R2_ACCOUNT_ID
+#   npx wrangler secret put R2_ACCESS_KEY_ID
+#   npx wrangler secret put R2_SECRET_ACCESS_KEY
+# R2_ACCOUNT_ID=
+# R2_ACCESS_KEY_ID=
+# R2_SECRET_ACCESS_KEY=
+
+# Point local development at the dev bucket, so it does not write into the
+# production one. Must match the bucket the DOCS binding resolves to.
+# R2_BUCKET=control-y-docs-dev

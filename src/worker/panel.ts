@@ -24,6 +24,7 @@ import type {
   MemoryKind,
   Pass,
   PassAgentResult,
+  PassEvent,
   RetrospectiveLesson,
   Severity,
 } from '../shared/types';
@@ -32,8 +33,10 @@ import { MEMORY_KINDS } from '../shared/types';
 import { HttpError, type AgentCredential, type Env } from './types';
 import { A2AError, consumeA2AStream, safeErrorText } from './a2a';
 import { credentialFor, listConnectedAgents } from './connect';
+import { presignFetch } from './r2';
 import { now } from './db';
 import {
+  beat,
   claimRetrospective,
   createMemoryEntry,
   finishRetrospective,
@@ -59,6 +62,36 @@ const DOC_CHARS_TOTAL = 60_000;
 const MAX_ISSUES_PER_PASS = 200;
 
 /* ───────── one A2A turn ───────── */
+
+/**
+ * One uploaded file, as the agent receives it: a presigned R2 URL it fetches for
+ * itself, rather than bytes inlined into the JSON-RPC body.
+ *
+ * That URL is a bearer capability handed to a third party — anyone holding it can
+ * read that document until it expires. `FETCH_URL_TTL_SECONDS` is sized to a pass
+ * and no longer, and the URLs are minted per pass, not stored.
+ */
+interface Attachment {
+  uri: string;
+  mediaType: string;
+  name: string;
+}
+
+/**
+ * Signs every file on a review once for the whole pass. Per reviewer would mint
+ * the same URL five times over, and inlining the bytes (as this did before R2)
+ * re-serialised every file into every reviewer's request body.
+ */
+async function attachmentsFor(env: Env, documents: PanelDocument[]): Promise<Attachment[]> {
+  const files = documents.filter((document) => document.kind === 'file');
+  return Promise.all(
+    files.map(async (document) => ({
+      uri: await presignFetch(env, document.key),
+      mediaType: document.mediaType,
+      name: document.name,
+    })),
+  );
+}
 
 /** Resolves the connected Manyfold agent one prompt runs on. */
 type CredentialFor = (agent: { name: string; agentId: string | null }) => Promise<AgentCredential>;
@@ -105,7 +138,7 @@ async function credentialResolver(env: Env): Promise<CredentialFor> {
  * an idempotency key, and every panel call is a distinct prompt sent exactly
  * once — a pass is never retried in place, only re-run as a new pass.
  */
-async function ask(cred: AgentCredential, prompt: string, documents: PanelDocument[] = []): Promise<string> {
+async function ask(cred: AgentCredential, prompt: string, attachments: Attachment[] = []): Promise<string> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), TURN_TIMEOUT_MS);
   try {
@@ -118,16 +151,14 @@ async function ask(cred: AgentCredential, prompt: string, documents: PanelDocume
           messageId: `turnzero-${crypto.randomUUID()}`,
           parts: [
             { kind: 'text', text: prompt },
-            ...documents
-              .filter((document) => document.encoding === 'base64')
-              .map((document) => ({
-                kind: 'file',
-                file: {
-                  bytes: document.content,
-                  mimeType: document.mediaType,
-                  name: document.name,
-                },
-              })),
+            ...attachments.map((attachment) => ({
+              kind: 'file',
+              file: {
+                uri: attachment.uri,
+                mimeType: attachment.mediaType,
+                name: attachment.name,
+              },
+            })),
           ],
         },
         configuration: { acceptedOutputModes: ['text/plain'] },
@@ -233,7 +264,7 @@ function documentsBlock(docs: PanelDocument[]): string {
   let budget = DOC_CHARS_TOTAL;
   return docs
     .map((doc) => {
-      if (doc.encoding === 'base64') {
+      if (doc.kind === 'file') {
         return `### ${doc.name}\n[attached to the message as a ${doc.mediaType} file]`;
       }
       const room = Math.min(DOC_CHARS_EACH, budget);
@@ -401,11 +432,30 @@ export function consolidateIssues(raw: unknown[], ctx: ConsolidationContext): Is
 
 /* ───────── running a pass ───────── */
 
-export async function startPass(
-  env: Env,
-  reviewId: string,
-  waitUntil: (promise: Promise<unknown>) => void,
-): Promise<Pass> {
+/** A claimed pass, and the run that has not started yet. See `startPass`. */
+export interface StartedPass {
+  /** The row as it now stands in D1: claimed, running, nothing done. */
+  pass: Pass;
+  /**
+   * Runs the pass to completion, reporting progress as it goes. Always writes a
+   * terminal row unless the Worker itself is killed, which is what the heartbeat
+   * is for. Call it exactly once, and keep the invocation alive until it settles.
+   */
+  run: (emit: Emit) => Promise<void>;
+}
+
+export type Emit = (event: PassEvent) => Promise<void> | void;
+
+/**
+ * Validates and claims a pass, and hands back the run without starting it.
+ *
+ * The split is the point. Everything that can fail before the first agent call
+ * fails here, inside the request, so the button gets a real HTTP error. What is
+ * left is minutes of agent turns, and the caller — not this module — decides what
+ * keeps the Worker alive for them. It must not be `waitUntil`: work that outlives
+ * its response gets roughly thirty seconds, and a pass is several times that.
+ */
+export async function startPass(env: Env, reviewId: string): Promise<StartedPass> {
   const review = await getReviewSummary(env, reviewId);
   if (review.running) {
     throw new HttpError(409, 'pass_running', 'A pass is already running on this review.');
@@ -465,13 +515,7 @@ export async function startPass(
     throw new HttpError(409, 'pass_running', 'A pass is already running on this review.');
   }
 
-  waitUntil(
-    runPass(env, { passId: id, reviewId }).catch(async (error) => {
-      await finish(env, id, 'failed', null, safeErrorText(error instanceof Error ? error.message : error), []);
-    }),
-  );
-
-  return {
+  const pass: Pass = {
     id,
     number,
     status: 'running',
@@ -481,6 +525,25 @@ export async function startPass(
     memoryEffects: 0,
     startedAt,
     finishedAt: null,
+  };
+
+  return {
+    pass,
+    run: async (emit) => {
+      // Beats for as long as the run does. If the Worker dies mid-pass the beats
+      // stop with it, and `reapStaleRuns` fails the row a minute later — without
+      // this the row would stay running and block the review for good.
+      const stopBeating = beat(env, id);
+      try {
+        await runPass(env, { passId: id, reviewId }, emit);
+      } catch (error) {
+        const message = safeErrorText(error instanceof Error ? error.message : error);
+        await finish(env, id, 'failed', null, message, []);
+        await emit({ type: 'error', message });
+      } finally {
+        stopBeating();
+      }
+    },
   };
 }
 
@@ -503,6 +566,7 @@ async function finish(
 async function runPass(
   env: Env,
   options: { passId: string; reviewId: string },
+  emit: Emit,
 ): Promise<void> {
   const { passId, reviewId } = options;
   const credentialOf = await credentialResolver(env);
@@ -553,34 +617,49 @@ async function runPass(
       : '',
   };
 
+  // Signed once, before the fan-out, and shared by every reviewer in this pass.
+  const attachments = await attachmentsFor(env, documents);
+
+  await emit({ type: 'stage', stage: 'reviewers', done: 0, total: enabled.length });
+  let answered = 0;
+
   const results = await mapLimit(enabled, AGENT_CONCURRENCY, async (agent) => {
+    // Reported the moment the agent lands, whichever way it went: a reviewer that
+    // found nothing and one that could not be reached are both results, and the
+    // wait is long enough that the difference is worth showing while it runs.
+    const report = async (result: PassAgentResult) => {
+      answered += 1;
+      await emit({ type: 'agent', ...result });
+      await emit({ type: 'stage', stage: 'reviewers', done: answered, total: enabled.length });
+      return result;
+    };
     try {
-      const reply = await ask(await credentialOf(agent), buildAgentPrompt(agent.prompt, ctx), documents);
+      const reply = await ask(await credentialOf(agent), buildAgentPrompt(agent.prompt, ctx), attachments);
       const payload = parsePayload<{ findings?: unknown }>(reply);
       const raw = Array.isArray(payload?.findings) ? payload.findings : null;
       if (!raw) {
         return {
           agent,
           findings: [] as Record<string, unknown>[],
-          result: { key: agent.key, name: agent.name, findings: null, error: 'Reply was not the expected JSON.' },
+          result: await report({ key: agent.key, name: agent.name, findings: null, error: 'Reply was not the expected JSON.' }),
         };
       }
       const findings = raw.slice(0, 60).filter((f): f is Record<string, unknown> => !!f && typeof f === 'object');
       return {
         agent,
         findings,
-        result: { key: agent.key, name: agent.name, findings: findings.length, error: null },
+        result: await report({ key: agent.key, name: agent.name, findings: findings.length, error: null }),
       };
     } catch (error) {
       return {
         agent,
         findings: [] as Record<string, unknown>[],
-        result: {
+        result: await report({
           key: agent.key,
           name: agent.name,
           findings: null,
           error: safeErrorText(error instanceof Error ? error.message : error),
-        },
+        }),
       };
     }
   });
@@ -588,7 +667,9 @@ async function runPass(
   const agentResults = results.map((entry) => entry.result);
   if (agentResults.every((result) => result.findings === null)) {
     const first = agentResults.find((result) => result.error)?.error ?? 'No agent returned findings.';
-    await finish(env, passId, 'failed', null, `Every agent failed. ${first}`, agentResults);
+    const message = `Every agent failed. ${first}`;
+    await finish(env, passId, 'failed', null, message, agentResults);
+    await emit({ type: 'error', message });
     return;
   }
 
@@ -619,20 +700,17 @@ async function runPass(
     ),
   );
 
+  await emit({ type: 'stage', stage: 'consolidator', done: 0, total: 1 });
+
   const reply = await ask(
     await credentialOf(consolidator),
     buildConsolidatorPrompt(consolidator.prompt, ctx, rosterBlock, findingsBlock),
   );
   const payload = parsePayload<{ issues?: unknown }>(reply);
   if (!Array.isArray(payload?.issues)) {
-    await finish(
-      env,
-      passId,
-      'failed',
-      null,
-      'The consolidator did not return an issue list. No issue was changed.',
-      agentResults,
-    );
+    const message = 'The consolidator did not return an issue list. No issue was changed.';
+    await finish(env, passId, 'failed', null, message, agentResults);
+    await emit({ type: 'error', message });
     return;
   }
 
@@ -674,6 +752,7 @@ async function runPass(
     agentResults,
     writes.filter((issue) => issue.memory).length,
   );
+  await emit({ type: 'done', openCount: open?.n ?? 0 });
 }
 
 /* ───────── the retrospective ───────── */
@@ -763,6 +842,11 @@ Rules:
  *
  * Nothing here can fail the close: `startRetrospective` runs under waitUntil and
  * every error lands on the retrospective row, where the review page shows it.
+ *
+ * It stays on waitUntil, unlike a pass, because it is a single turn and closing a
+ * review should not depend on the user waiting on the page. A single turn usually
+ * fits in the time work gets after its response — and when it does not, the beat
+ * below stops with the Worker and the run is reaped rather than left running.
  */
 export async function startRetrospective(
   env: Env,
@@ -771,13 +855,16 @@ export async function startRetrospective(
 ): Promise<void> {
   const id = await claimRetrospective(env, reviewId);
   if (!id) return; // One is already running on this review.
+  const stopBeating = beat(env, id);
   waitUntil(
-    runRetrospective(env, id, reviewId).catch(async (error) => {
-      await finishRetrospective(env, id, {
-        status: 'failed',
-        error: safeErrorText(error instanceof Error ? error.message : error),
-      });
-    }),
+    runRetrospective(env, id, reviewId)
+      .catch(async (error) => {
+        await finishRetrospective(env, id, {
+          status: 'failed',
+          error: safeErrorText(error instanceof Error ? error.message : error),
+        });
+      })
+      .finally(stopBeating),
   );
 }
 
@@ -895,8 +982,15 @@ async function runRetrospective(env: Env, id: string, reviewId: string): Promise
 
 /* ───────── linking a pasted reply ───────── */
 
-/** Proposes links from a pasted reply to the open issues. Never decides them. */
+/**
+ * Proposes links from a pasted reply to the open issues. Never decides them.
+ *
+ * A batch left at `linking` blocks every pass on the review, so this beats for as
+ * long as it runs: if the Worker goes before the batch is settled, the beat stops
+ * with it and `reapStaleRuns` fails the batch rather than leaving the review stuck.
+ */
 export async function linkFeedback(env: Env, reviewId: string, batchId: string): Promise<void> {
+  const stopBeating = beat(env, batchId);
   try {
     const [credentialOf, consolidator, issues, batches] = await Promise.all([
       credentialResolver(env),
@@ -973,6 +1067,8 @@ Return {"links":[]} if the reply touches none of them. Quote only text that appe
     await env.DB.prepare("UPDATE feedback_batches SET status = 'failed', error = ? WHERE id = ?")
       .bind(safeErrorText(error instanceof Error ? error.message : error), batchId)
       .run();
+  } finally {
+    stopBeating();
   }
 }
 

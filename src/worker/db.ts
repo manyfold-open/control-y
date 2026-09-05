@@ -169,6 +169,15 @@ CREATE TABLE IF NOT EXISTS documents (
   created_at TEXT NOT NULL
 );
 
+-- Where an uploaded document's bytes live in R2. A documents row with no row here
+-- carries its content inline instead: pasted text, and files stored before uploads
+-- moved to R2. There is no migration step, so both shapes stay readable.
+CREATE TABLE IF NOT EXISTS document_objects (
+  document_id TEXT PRIMARY KEY,
+  r2_key      TEXT NOT NULL,
+  media_type  TEXT NOT NULL DEFAULT 'application/octet-stream'
+);
+
 CREATE TABLE IF NOT EXISTS passes (
   id          TEXT PRIMARY KEY,
   review_id   TEXT NOT NULL,
@@ -179,6 +188,21 @@ CREATE TABLE IF NOT EXISTS passes (
   detail      TEXT NOT NULL DEFAULT '[]',
   started_at  TEXT NOT NULL,
   finished_at TEXT
+);
+
+-- A liveness beat from a background run: a pass, a close-out, or a pasted reply
+-- being read. The run writes here every few seconds; a row still marked running
+-- whose beat has stopped is a run whose Worker is gone, which is the one failure
+-- no catch block can report. store.ts reaps those. The id is the pass /
+-- retrospective / feedback-batch id, and a separate table because there is no
+-- migration step — a column added to the passes table would never reach a
+-- database an earlier build created.
+--
+-- (No backticks in this string: SCHEMA is a template literal, and a backtick
+--  here terminates it. That is a syntax error in db.ts, not a SQL problem.)
+CREATE TABLE IF NOT EXISTS run_heartbeats (
+  id      TEXT PRIMARY KEY,
+  beat_at TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS issues (

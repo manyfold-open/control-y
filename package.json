@@ -17,6 +17,7 @@
     "node": ">=22"
   },
   "dependencies": {
+    "aws4fetch": "^1.0.20",
     "hono": "^4.13.1",
     "react": "^19.2.0",
     "react-dom": "^19.2.0"

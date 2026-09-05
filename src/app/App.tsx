@@ -163,6 +163,7 @@ export default function App() {
               <ReviewDetailView
                 key={place.id}
                 reviewId={place.id}
+                workspace={workspace.data}
                 onBack={() => go('reviews')}
                 reloadWorkspace={reloadWorkspace}
               />

@@ -9,10 +9,18 @@
  */
 
 import { Hono } from 'hono';
-import type { MemoryKind, Severity, Workspace } from '../shared/types';
+import type { MemoryKind, PassEvent, Severity, Workspace } from '../shared/types';
 import { HttpError, type Env } from './types';
 import { linkFeedback, panelReady, startPass, startRetrospective } from './panel';
 import { listConnectedAgents } from './connect';
+import {
+  MAX_UPLOAD_BYTES,
+  UPLOAD_URL_TTL_SECONDS,
+  documentKey,
+  formatLimit,
+  presignUpload,
+  uploadsConfigured,
+} from './r2';
 import * as store from './store';
 
 const MEMORY_KINDS = ['Treatment', 'Pattern', 'Instruction', 'Fact'] as const;
@@ -113,6 +121,8 @@ ctrlY.get('/workspace', async (c) => {
     openIssues: reviews.reduce((total, review) => total + review.openIssues, 0),
     lastPass,
     panelReady: connectedAgents.length > 0,
+    uploadsEnabled: uploadsConfigured(c.env),
+    maxUploadBytes: MAX_UPLOAD_BYTES,
   };
   return c.json(workspace);
 });
@@ -264,26 +274,96 @@ ctrlY.delete('/reviews/:id', async (c) => {
 
 /* ── documents ── */
 
+/**
+ * Step one of an upload: mint the id and hand back a URL the browser PUTs the
+ * file to directly. Nothing is written to D1 yet — a row is only created once
+ * the object is confirmed to exist, so an abandoned upload leaves no document.
+ */
+ctrlY.post('/reviews/:id/documents/upload-url', async (c) => {
+  const reviewId = c.req.param('id');
+  await store.getReviewSummary(c.env, reviewId);
+  const body = await readBody(c.req);
+  const name = required(body, 'name', 200);
+  const mediaType = optional(body, 'mediaType', 200) || 'application/octet-stream';
+  const bytes = body.bytes;
+  if (typeof bytes !== 'number' || !Number.isFinite(bytes) || bytes <= 0) {
+    bad('"bytes" must be the size of the file.');
+  }
+  if ((bytes as number) > MAX_UPLOAD_BYTES) {
+    bad(`That file is larger than ${formatLimit(MAX_UPLOAD_BYTES)}. Upload a smaller file, or paste an extract as text.`);
+  }
+
+  const documentId = `d-${crypto.randomUUID()}`;
+  const key = documentKey(reviewId, documentId);
+  const uploadUrl = await presignUpload(c.env, key, mediaType);
+  return c.json(
+    {
+      documentId,
+      uploadUrl,
+      mediaType,
+      name,
+      expiresAt: new Date(Date.now() + UPLOAD_URL_TTL_SECONDS * 1000).toISOString(),
+    },
+    201,
+  );
+});
+
+/**
+ * Two documents in one route, because they are one thing to the user.
+ *
+ * `content` is pasted text, held inline in D1 — it is prompt material, not a file.
+ * `documentId` confirms an upload: the object is looked up through the binding to
+ * prove it landed and to take its true size from R2, rather than trusting a
+ * browser that could claim any size for a file it never sent.
+ */
 ctrlY.post('/reviews/:id/documents', async (c) => {
   const reviewId = c.req.param('id');
   await store.getReviewSummary(c.env, reviewId);
   const body = await readBody(c.req);
-  const rawContentEncoding = body.contentEncoding === undefined ? 'text' : body.contentEncoding;
-  if (rawContentEncoding !== 'text' && rawContentEncoding !== 'base64') {
-    bad('"contentEncoding" must be "text" or "base64".');
+  const name = required(body, 'name', 200);
+  const documentId = optional(body, 'documentId', 80);
+
+  if (!documentId) {
+    const document = await store.addTextDocument(c.env, reviewId, {
+      name,
+      content: required(body, 'content', DOCUMENT_MAX_CHARS),
+    });
+    return c.json({ document }, 201);
   }
-  const contentEncoding = rawContentEncoding as 'text' | 'base64';
-  const content = required(body, 'content', DOCUMENT_MAX_CHARS);
-  if (contentEncoding === 'base64' && (content.length % 4 !== 0 || !/^[A-Za-z0-9+/]*={0,2}$/.test(content))) {
-    bad('"content" must be valid base64 when "contentEncoding" is "base64".');
+
+  const key = documentKey(reviewId, documentId);
+  const object = await c.env.DOCS.head(key);
+  if (!object) bad('That upload did not complete. Choose the file again.');
+  if (object!.size > MAX_UPLOAD_BYTES) {
+    await c.env.DOCS.delete(key);
+    bad(`That file is larger than ${formatLimit(MAX_UPLOAD_BYTES)}.`);
   }
-  const document = await store.addDocument(c.env, reviewId, {
-    name: required(body, 'name', 200),
-    content,
-    contentEncoding,
-    mediaType: optional(body, 'mediaType', 200) ?? (contentEncoding === 'base64' ? 'application/octet-stream' : 'text/plain'),
+  const document = await store.addUploadedDocument(c.env, reviewId, {
+    id: documentId,
+    name,
+    key,
+    mediaType: object!.httpMetadata?.contentType || optional(body, 'mediaType', 200) || 'application/octet-stream',
+    bytes: object!.size,
   });
   return c.json({ document }, 201);
+});
+
+/** The file itself. Behind the admin gate like every other /api route. */
+ctrlY.get('/reviews/:id/documents/:documentId/raw', async (c) => {
+  const reviewId = c.req.param('id');
+  const record = await store.documentObject(c.env, reviewId, c.req.param('documentId'));
+  if (!record) throw new HttpError(404, 'not_found', 'That document has no stored file.');
+  const object = await c.env.DOCS.get(record.key);
+  if (!object) throw new HttpError(404, 'not_found', 'That file is no longer in storage.');
+  return new Response(object.body, {
+    headers: {
+      'content-type': record.mediaType,
+      'content-length': String(object.size),
+      // The name is user-supplied, so it is quoted and stripped of anything that
+      // could break out of the header value.
+      'content-disposition': `attachment; filename="${record.name.replace(/[^\w.\- ]+/g, '_')}"`,
+    },
+  });
 });
 
 ctrlY.delete('/reviews/:id/documents/:documentId', async (c) => {
@@ -315,9 +395,70 @@ ctrlY.put('/reviews/:id/memory/:entryId', async (c) => {
 
 /* ── the pass ── */
 
+/**
+ * Runs a pass, streaming its progress for as long as it takes.
+ *
+ * The stream is not a feature, it is the mechanism. A pass is several agent turns
+ * end to end — minutes — and a Worker only stays alive for about thirty seconds
+ * once its response is finished, so a pass started under waitUntil is killed
+ * part-way through every time, leaving a row marked running that no code will ever
+ * settle. Holding the response open instead keeps the invocation alive for the
+ * whole run, exactly as a chat turn does. CPU is not the constraint here: a pass
+ * spends its time waiting on agents, and burns tens of milliseconds doing it.
+ *
+ * Anything that can fail before the first agent call still fails as an ordinary
+ * HTTP error, because `startPass` validates and claims the row before a byte of
+ * the stream is written.
+ *
+ * If the browser goes away mid-run the invocation goes with it, and the pass row
+ * is left running. The heartbeat that `startPass` keeps, and `reapStaleRuns` reads,
+ * is what turns that into a failed pass a minute later instead of a review that can
+ * never be run again.
+ */
 ctrlY.post('/reviews/:id/passes', async (c) => {
-  const pass = await startPass(c.env, c.req.param('id'), (promise) => c.executionCtx.waitUntil(promise));
-  return c.json({ pass }, 202);
+  const started = await startPass(c.env, c.req.param('id'));
+
+  const { readable, writable } = new TransformStream();
+  const writer = writable.getWriter();
+  const encoder = new TextEncoder();
+  let clientGone = false;
+
+  const emit = async (event: PassEvent) => {
+    if (clientGone) return;
+    try {
+      await writer.write(encoder.encode(`data: ${JSON.stringify(event)}\n\n`));
+    } catch {
+      // The browser went away. Keep running: the outcome belongs on the pass row
+      // whether or not anyone is still watching it arrive.
+      clientGone = true;
+    }
+  };
+
+  const run = (async () => {
+    try {
+      // Flushed first so intermediaries commit to streaming, and so the browser
+      // has the pass the moment it exists rather than when the run ends.
+      await emit({ type: 'start', pass: started.pass });
+      await started.run(emit);
+    } finally {
+      try {
+        await writer.close();
+      } catch {
+        /* already closed or client gone */
+      }
+    }
+  })();
+  // Only covers the tail after a disconnect; the open response is what carries the
+  // run itself.
+  c.executionCtx.waitUntil(run);
+
+  return new Response(readable, {
+    headers: {
+      'content-type': 'text/event-stream',
+      'cache-control': 'no-store',
+      'x-accel-buffering': 'no',
+    },
+  });
 });
 
 /* ── issues ── */

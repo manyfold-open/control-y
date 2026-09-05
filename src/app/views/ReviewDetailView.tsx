@@ -20,9 +20,11 @@ import type {
   RosterEntry,
   ScopedMemoryEntry,
   Severity,
+  Workspace,
 } from '../../shared/types';
 import { composeLetter } from '../../shared/letter';
-import { send } from '../api';
+import { authHeaders, send } from '../api';
+import { streamPass } from '../sse';
 import { errorText, formatBytes, formatWhen, initials, useCopy, usePoll, useResource, type CopyLabel } from '../lib';
 import { evidenceText } from '../../shared/evidence';
 import Convergence from '../components/Convergence';
@@ -71,10 +73,12 @@ const countUndecided = (feedback: FeedbackBatch[]): number =>
 
 export default function ReviewDetailView({
   reviewId,
+  workspace,
   onBack,
   reloadWorkspace,
 }: {
   reviewId: string;
+  workspace: Workspace | null;
   onBack: () => void;
   reloadWorkspace: (quiet?: boolean) => Promise<void>;
 }) {
@@ -87,6 +91,8 @@ export default function ReviewDetailView({
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [busy, setBusy] = useState(false);
+  /** Only the gap between pressing Run and the pass existing; `running` takes over. */
+  const [passStarting, setPassStarting] = useState(false);
   const [actionError, setActionError] = useState('');
   const [copyLabel, copy] = useCopy();
 
@@ -189,7 +195,45 @@ export default function ReviewDetailView({
           ? `${undecided} proposed links still need a decision.`
           : '';
 
-  const runPass = () => act(() => send('POST', `/api/reviews/${review.id}/passes`));
+  /**
+   * Runs a pass and stays on the line until it ends.
+   *
+   * The connection is not decoration: the Worker running the pass lives only as
+   * long as this response is open, so leaving the page part-way through stops the
+   * run. It is marked as a failed pass shortly after, and the review stays runnable.
+   *
+   * The stream carries progress, not content — the poll re-reads the review, the
+   * same as after any other write. The first event says the pass exists, which is
+   * what starts that poll; the last says it finished, or says why it did not.
+   *
+   * Deliberately not run through `act`: that holds `busy` for the whole call, and a
+   * pass takes minutes. Assigning an issue or copying a letter must stay possible
+   * while the panel is reading. Only the run button waits, and only until the pass
+   * exists — after that `running` disables it.
+   */
+  const runPass = async (): Promise<boolean> => {
+    setPassStarting(true);
+    setActionError('');
+    let failure = '';
+    try {
+      await streamPass(review.id, (event) => {
+        if (event.type === 'start') {
+          setPassStarting(false);
+          void reload(true);
+          void reloadWorkspace(true);
+        }
+        if (event.type === 'error') failure = event.message;
+      });
+    } catch (caught) {
+      failure = errorText(caught);
+    } finally {
+      setPassStarting(false);
+    }
+    await reload(true);
+    await reloadWorkspace(true);
+    if (failure) setActionError(failure);
+    return !failure;
+  };
 
   return (
     <div className="review">
@@ -212,11 +256,11 @@ export default function ReviewDetailView({
             <button
               className="button primary"
               type="button"
-              disabled={busy || blockedReason !== ''}
+              disabled={busy || passStarting || blockedReason !== ''}
               title={blockedReason || `Re-run the panel over every open issue`}
               onClick={() => void runPass()}
             >
-              {running ? 'Pass running…' : `Run pass ${nextPass}`}
+              {running || passStarting ? 'Pass running…' : `Run pass ${nextPass}`}
             </button>
           </div>
         </div>
@@ -405,6 +449,7 @@ export default function ReviewDetailView({
       {settingsOpen && (
         <ReviewSettings
           detail={data}
+          workspace={workspace}
           busy={busy}
           act={act}
           onClose={() => setSettingsOpen(false)}
@@ -828,23 +873,38 @@ const VIDEO_FILE = /\.(3gp|avi|flv|m2ts|m4v|mkv|mov|mp4|mpeg|mpg|ogv|vob|webm|wm
 const isVideoFile = (file: File): boolean => file.type.toLowerCase().startsWith('video/') || VIDEO_FILE.test(file.name);
 const isTextFile = (file: File): boolean => file.type.toLowerCase().startsWith('text/') || TEXT_FILE.test(file.name);
 
-function bytesToBase64(bytes: Uint8Array): string {
-  let binary = '';
-  const chunkSize = 0x8000;
-  for (let offset = 0; offset < bytes.length; offset += chunkSize) {
-    binary += String.fromCharCode(...bytes.subarray(offset, offset + chunkSize));
-  }
-  return btoa(binary);
+const megabytes = (bytes: number): string => `${Math.round(bytes / (1024 * 1024))} MB`;
+
+interface UploadTicket {
+  documentId: string;
+  uploadUrl: string;
+  mediaType: string;
+}
+
+/**
+ * Uploads straight to R2 with the presigned URL, so the bytes never pass through
+ * the Worker. The content-type is signed into that URL, so it has to be sent back
+ * exactly — anything else and R2 rejects the signature.
+ */
+async function putToR2(uploadUrl: string, file: File, mediaType: string): Promise<void> {
+  const response = await fetch(uploadUrl, {
+    method: 'PUT',
+    headers: { 'content-type': mediaType },
+    body: file,
+  });
+  if (!response.ok) throw new Error(`The upload was refused (HTTP ${response.status}).`);
 }
 
 function ReviewSettings({
   detail,
+  workspace,
   busy,
   act,
   onClose,
   onDeleted,
 }: {
   detail: ReviewDetail;
+  workspace: Workspace | null;
   busy: boolean;
   act: Act;
   onClose: () => void;
@@ -856,44 +916,104 @@ function ReviewSettings({
   const [period, setPeriod] = useState(review.period);
   const [docName, setDocName] = useState('');
   const [docContent, setDocContent] = useState('');
-  const [docEncoding, setDocEncoding] = useState<'text' | 'base64'>('text');
-  const [docMediaType, setDocMediaType] = useState('');
-  const [binaryFile, setBinaryFile] = useState<{ name: string; bytes: number; mediaType: string } | null>(null);
+  const [pending, setPending] = useState<File | null>(null);
   const [readError, setReadError] = useState('');
+  const [uploading, setUploading] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
 
   const dirty = name.trim() !== review.name || counterparty !== review.counterparty || period !== review.period;
+  const maxBytes = workspace?.maxUploadBytes ?? 10 * 1024 * 1024;
+  const uploadsEnabled = workspace?.uploadsEnabled ?? false;
 
-  const pickFile = async (file: File | undefined) => {
+  /**
+   * Nothing is read here beyond a text file's own text. A binary is only held as
+   * a File handle until Add is pressed — the size is checked first, so an
+   * oversized pick costs nothing rather than being read and encoded before the
+   * server refuses it.
+   */
+  const pickFile = (file: File | undefined) => {
     if (!file) return;
     if (isVideoFile(file)) {
       setReadError('Video files are not supported yet. Choose any other file type.');
       return;
     }
-    try {
-      setReadError('');
-      setDocName(file.name);
-      setDocMediaType(file.type || 'application/octet-stream');
-      if (isTextFile(file)) {
-        setDocEncoding('text');
-        setBinaryFile(null);
-        setDocContent(await file.text());
-      } else {
-        setDocEncoding('base64');
-        setBinaryFile({ name: file.name, bytes: file.size, mediaType: file.type || 'application/octet-stream' });
-        setDocContent(bytesToBase64(new Uint8Array(await file.arrayBuffer())));
+    if (file.size > maxBytes) {
+      setReadError(
+        `${file.name} is ${formatBytes(file.size)}. The limit is ${megabytes(maxBytes)} — paste an extract as text instead.`,
+      );
+      return;
+    }
+    setReadError('');
+    setDocName(file.name);
+    if (isTextFile(file)) {
+      setPending(null);
+      file
+        .text()
+        .then(setDocContent)
+        .catch(() => setReadError('Could not read that file. Try choosing it again or paste its contents.'));
+    } else {
+      if (!uploadsEnabled) {
+        setReadError('File uploads are not configured on this deployment. Paste an extract as text instead.');
+        return;
       }
-    } catch {
-      setReadError('Could not read that file. Try choosing it again or paste its contents.');
+      setPending(file);
+      setDocContent('');
     }
   };
 
   const clearDocumentDraft = () => {
     setDocName('');
     setDocContent('');
-    setDocEncoding('text');
-    setDocMediaType('');
-    setBinaryFile(null);
+    setPending(null);
+  };
+
+  /** Text goes straight to the API. A file is uploaded to R2 first, then confirmed. */
+  const addDocument = async () => {
+    if (!pending) {
+      const ok = await act(() =>
+        send('POST', `/api/reviews/${review.id}/documents`, { name: docName.trim(), content: docContent }),
+      );
+      if (ok) clearDocumentDraft();
+      return;
+    }
+    setUploading(true);
+    setReadError('');
+    try {
+      const ticket = await send<UploadTicket>('POST', `/api/reviews/${review.id}/documents/upload-url`, {
+        name: docName.trim(),
+        mediaType: pending.type || 'application/octet-stream',
+        bytes: pending.size,
+      });
+      await putToR2(ticket.uploadUrl, pending, ticket.mediaType);
+      const ok = await act(() =>
+        send('POST', `/api/reviews/${review.id}/documents`, {
+          name: docName.trim(),
+          documentId: ticket.documentId,
+          mediaType: ticket.mediaType,
+        }),
+      );
+      if (ok) clearDocumentDraft();
+    } catch (caught) {
+      setReadError(errorText(caught));
+    } finally {
+      setUploading(false);
+    }
+  };
+
+  /** The raw route is behind the admin gate, so a bare href would 401. */
+  const download = async (documentId: string, fileName: string) => {
+    try {
+      const response = await fetch(`/api/reviews/${review.id}/documents/${documentId}/raw`, {
+        headers: authHeaders(),
+      });
+      if (!response.ok) throw new Error(`Could not download that file (HTTP ${response.status}).`);
+      const url = URL.createObjectURL(await response.blob());
+      const anchor = Object.assign(document.createElement('a'), { href: url, download: fileName });
+      anchor.click();
+      URL.revokeObjectURL(url);
+    } catch (caught) {
+      setReadError(errorText(caught));
+    }
   };
 
   return (
@@ -912,6 +1032,13 @@ function ReviewSettings({
               <button
                 className="button subtle small"
                 type="button"
+                onClick={() => void download(document.id, document.name)}
+              >
+                Download
+              </button>
+              <button
+                className="button subtle small"
+                type="button"
                 disabled={busy}
                 onClick={() => void act(() => send('DELETE', `/api/reviews/${review.id}/documents/${document.id}`))}
               >
@@ -924,13 +1051,22 @@ function ReviewSettings({
             <Field label="Add a document">
               <input value={docName} onChange={(event) => setDocName(event.target.value)} placeholder="staging.xlsx (extract)" />
             </Field>
-            {binaryFile ? (
+            {pending ? (
               <div className="file-preview" aria-live="polite">
-                <strong>{binaryFile.name}</strong>
-                <span>{formatBytes(binaryFile.bytes)} · Ready to attach · {binaryFile.mediaType}</span>
+                <strong>{pending.name}</strong>
+                <span>
+                  {formatBytes(pending.size)} · Ready to upload · {pending.type || 'application/octet-stream'}
+                </span>
               </div>
             ) : (
-              <Field label="Its text" hint="Paste an extract, or load any non-video file.">
+              <Field
+                label="Its text"
+                hint={
+                  uploadsEnabled
+                    ? `Paste an extract, or load a file up to ${megabytes(maxBytes)}.`
+                    : 'Paste an extract. File uploads are not configured on this deployment.'
+                }
+              >
                 <textarea rows={5} value={docContent} onChange={(event) => setDocContent(event.target.value)} />
               </Field>
             )}
@@ -942,7 +1078,7 @@ function ReviewSettings({
                   type="file"
                   accept="*/*"
                   onChange={(event) => {
-                    void pickFile(event.target.files?.[0]);
+                    pickFile(event.target.files?.[0]);
                     event.currentTarget.value = '';
                   }}
                 />
@@ -950,22 +1086,10 @@ function ReviewSettings({
               <button
                 className="button primary small"
                 type="button"
-                disabled={busy || !docName.trim() || !docContent.trim()}
-                onClick={() =>
-                  void act(() =>
-                    send('POST', `/api/reviews/${review.id}/documents`, {
-                      name: docName.trim(),
-                      content: docContent,
-                      contentEncoding: docEncoding,
-                      ...(docMediaType ? { mediaType: docMediaType } : {}),
-                    }),
-                  ).then((ok) => {
-                    if (!ok) return;
-                    clearDocumentDraft();
-                  })
-                }
+                disabled={busy || uploading || !docName.trim() || (!pending && !docContent.trim())}
+                onClick={() => void addDocument()}
               >
-                Add document
+                {uploading ? 'Uploading…' : 'Add document'}
               </button>
             </div>
           </div>
