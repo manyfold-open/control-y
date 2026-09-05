@@ -8,7 +8,7 @@
 // Keep `main`, `assets` and the `DB` binding valid — the app reads all three.
 {
   "$schema": "node_modules/wrangler/config-schema.json",
-  "name": "bridge",
+  "name": "control-y",
   "main": "./src/worker/index.ts",
   "compatibility_date": "2026-08-01",
   "observability": {
@@ -25,7 +25,7 @@
     {
       "binding": "DB",
       "database_name": "manyfold-app-db",
-      "database_id": "8911dae0-a52a-4264-bf99-e44efdcd1fa3"
+      "database_id": "2593ce02-4386-4306-8bc5-d9595b1bdaa4"
     }
   ],
   "vars": {
