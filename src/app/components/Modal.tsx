@@ -29,7 +29,7 @@ export default function Modal({
       if (event.key === 'Escape') onClose();
     };
     document.addEventListener('keydown', onKey);
-    box.current?.querySelector<HTMLElement>('input, textarea, select')?.focus();
+    box.current?.querySelector<HTMLElement>('input, textarea, select, .select-trigger')?.focus();
     return () => document.removeEventListener('keydown', onKey);
   }, [onClose]);
 

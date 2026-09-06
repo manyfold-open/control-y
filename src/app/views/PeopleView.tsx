@@ -37,8 +37,8 @@ export default function PeopleView({
         <div>
           <h1 className="page-title">People</h1>
           {review && (
-            <p className="page-scope" title="Titles and open counts below are for this review">
-              <Icon name="reviews" size={14} /> {review.name}
+            <p className="page-scope">
+              <Icon name="reviews" size={14} /> Titles and open counts below are for {review.name}
             </p>
           )}
         </div>
@@ -72,9 +72,9 @@ export default function PeopleView({
                     <span className="person-org">{person.org}</span>
                   </span>
                 </span>
-                <span className="people-cell">{person.role || '—'}</span>
+                <span className="people-cell">{person.role || 'none recorded'}</span>
                 <span className="people-cell emphasis">{title || 'none recorded'}</span>
-                <span className="people-cell tnum">{count > 0 ? count : '—'}</span>
+                <span className="people-cell tnum">{count}</span>
               </button>
             );
           })}
@@ -192,7 +192,7 @@ function PersonDialog({
                 confirmRemove ? void run(() => send('DELETE', `/api/people/${person.id}`)) : setConfirmRemove(true)
               }
             >
-              {confirmRemove ? 'Remove — their issues become unassigned' : 'Remove'}
+              {confirmRemove ? 'Remove: their issues become unassigned' : 'Remove'}
             </button>
           )}
           <button className="button" type="button" onClick={onClose}>

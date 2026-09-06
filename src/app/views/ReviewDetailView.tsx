@@ -31,6 +31,7 @@ import Convergence from '../components/Convergence';
 import Icon from '../components/Icon';
 import Modal, { Field } from '../components/Modal';
 import RetrospectivePanel from '../components/RetrospectivePanel';
+import Select from '../components/Select';
 
 type FilterKey = 'open' | 'mine' | 'resolved';
 
@@ -289,9 +290,9 @@ export default function ReviewDetailView({
             className="bar-meta"
             type="button"
             onClick={() => setSettingsOpen(true)}
-            title={`${[review.counterparty, review.period].filter(Boolean).join(' · ')}${
+            aria-label={`${[review.counterparty, review.period].filter(Boolean).join(' · ')}${
               review.counterparty || review.period ? ' · ' : ''
-            }${documents.length} ${documents.length === 1 ? 'document' : 'documents'}`}
+            }${documents.length} ${documents.length === 1 ? 'document' : 'documents'}. Open the review's settings.`}
           >
             <Icon name="reviews" />
             <span className="tnum">{documents.length}</span>
@@ -302,7 +303,7 @@ export default function ReviewDetailView({
             className={passOpen ? 'bar-count open' : 'bar-count'}
             type="button"
             aria-expanded={passOpen}
-            title={passOpen ? 'Hide what each agent reported' : 'What each agent reported'}
+            aria-label={passOpen ? 'Hide what each agent reported' : 'Show what each agent reported'}
             onClick={() => setPassOpen(!passOpen)}
           >
             <Convergence passes={review.passes} running={running} />
@@ -317,13 +318,14 @@ export default function ReviewDetailView({
               className="button primary"
               type="button"
               disabled={busy || passStarting || blockedReason !== ''}
-              title={blockedReason || `Re-run the panel over every open issue`}
               onClick={() => void runPass()}
             >
               {running || passStarting ? 'Pass running…' : `Run pass ${nextPass}`}
             </button>
           </div>
         </div>
+
+        {blockedReason !== '' && <p className="blocked-note">{blockedReason}</p>}
 
         {passOpen && (
           <div className="panel-strip">
@@ -347,7 +349,7 @@ export default function ReviewDetailView({
             )}
             <div className="panel-strip-item memory">
               <span className="panel-strip-name">
-                Memory — {inScope} {inScope === 1 ? 'entry' : 'entries'} in scope
+                Memory: {inScope} {inScope === 1 ? 'entry' : 'entries'} in scope
               </span>
               {strip && strip.memoryEffects > 0 && (
                 <span className="tnum panel-strip-count">
@@ -393,9 +395,8 @@ export default function ReviewDetailView({
                 ]
                   .filter(Boolean)
                   .join(' ')}
-                aria-label={issue.ref}
+                aria-label={`${issue.ref}: ${issue.statement}`}
                 aria-current={issue.id === selected?.id}
-                title={`${issue.ref} · ${issue.statement}`}
                 onClick={() => setSelectedId(issue.id)}
               />
             ))}
@@ -592,7 +593,7 @@ function IssueDetail({
           <h3 className="detail-label">Evidence</h3>
           <figure className="evidence">
             <figcaption className="evidence-source">
-              <span className="evidence-locator" title={issue.evidence.label}>
+              <span className="evidence-locator">
                 {issue.evidence.label}
               </span>
               <button
@@ -628,15 +629,18 @@ function IssueDetail({
         {reassigning ? (
           <div className="inline-form">
             <Field label="Who can answer this">
-              <select value={assigneeId} onChange={(event) => setAssigneeId(event.target.value)}>
-                <option value="">Nobody yet</option>
-                {roster.map((person) => (
-                  <option key={person.id} value={person.id}>
-                    {person.name}
-                    {person.reviewTitle ? ` — ${person.reviewTitle}` : ''}
-                  </option>
-                ))}
-              </select>
+              <Select
+                value={assigneeId}
+                onChange={setAssigneeId}
+                options={[
+                  { value: '', label: 'Nobody yet' },
+                  ...roster.map((person) => ({
+                    value: person.id,
+                    label: person.name,
+                    note: person.reviewTitle || undefined,
+                  })),
+                ]}
+              />
             </Field>
             <Field label="Why them">
               <input
@@ -664,7 +668,7 @@ function IssueDetail({
         ) : (
           <div className="assignee">
             <span className={assignee?.isSelf ? 'avatar self' : 'avatar'}>
-              {assignee ? initials(assignee.name) : '—'}
+              {assignee ? initials(assignee.name) : ''}
             </span>
             <div className="assignee-body">
               <span className="assignee-name">
@@ -743,15 +747,20 @@ function IssueDetail({
                   >
                     Edit draft
                   </button>
-                  <label className="sent-check">
-                    <input
-                      type="checkbox"
-                      checked={issue.sentAt !== null}
+                  <span className="sent-check">
+                    <button
+                      type="button"
+                      role="switch"
+                      aria-checked={issue.sentAt !== null}
+                      aria-label="Mark this message as sent"
+                      className={issue.sentAt !== null ? 'switch on' : 'switch'}
                       disabled={busy}
-                      onChange={(event) => void patch({ sent: event.target.checked })}
-                    />{' '}
+                      onClick={() => void patch({ sent: issue.sentAt === null })}
+                    >
+                      <span className="switch-thumb" />
+                    </button>
                     Mark as sent
-                  </label>
+                  </span>
                 </div>
               </>
             )}
@@ -872,13 +881,11 @@ function RememberDialog({
     >
       <div className="dialog-form">
         <Field label="Kind">
-          <select value={kind} onChange={(event) => setKind(event.target.value as MemoryKind)}>
-            {MEMORY_KINDS.map((value) => (
-              <option key={value} value={value}>
-                {value}
-              </option>
-            ))}
-          </select>
+          <Select
+            value={kind}
+            onChange={(next) => setKind(next as MemoryKind)}
+            options={MEMORY_KINDS.map((value) => ({ value, label: value }))}
+          />
         </Field>
         <Field label="The rule">
           <textarea rows={4} value={text} onChange={(event) => setText(event.target.value)} />
@@ -979,7 +986,7 @@ function ReviewSettings({
     }
     if (file.size > maxBytes) {
       setReadError(
-        `${file.name} is ${formatBytes(file.size)}. The limit is ${megabytes(maxBytes)} — paste an extract as text instead.`,
+        `${file.name} is ${formatBytes(file.size)}. The limit is ${megabytes(maxBytes)}. Paste an extract as text instead.`,
       );
       return;
     }
@@ -1150,15 +1157,15 @@ function ReviewSettings({
             <input value={period} onChange={(event) => setPeriod(event.target.value)} />
           </Field>
           <div className="inline-form-foot">
+            <p className="foot-note">
+              {review.status === 'open'
+                ? 'Closing runs the retrospective: it writes the close-out and proposes rules to carry forward, all switched off until you accept them.'
+                : 'Reopening leaves the existing retrospective in place.'}
+            </p>
             <button
               className="button small"
               type="button"
               disabled={busy}
-              title={
-                review.status === 'open'
-                  ? 'Closing runs the retrospective: it writes the close-out and proposes rules to carry forward, all switched off until you accept them.'
-                  : 'Reopening leaves the existing retrospective in place.'
-              }
               onClick={() =>
                 void act(() =>
                   send('PATCH', `/api/reviews/${review.id}`, {
@@ -1274,7 +1281,7 @@ function QueueOverlay({
               </button>
             ))}
           </nav>
-          <button className="icon-button" type="button" title="Close" aria-label="Close" onClick={onClose}>
+          <button className="icon-button" type="button" aria-label="Close" onClick={onClose}>
             <Icon name="x" />
           </button>
         </header>
@@ -1426,7 +1433,7 @@ function FeedbackDrawer({
                       <span className={effect.className}>{effect.label}</span>
                       {issue && (
                         <button className="link-issue" type="button" onClick={() => onSelect(issue.id)}>
-                          {issue.ref} — {issue.statement}
+                          {issue.ref}: {issue.statement}
                         </button>
                       )}
                     </div>
@@ -1483,26 +1490,26 @@ function FeedbackDrawer({
           <section className="detail-section">
             <h3 className="detail-label">Paste a reply</h3>
             <Field label="Who wrote it">
-              <select value={from} onChange={(event) => setFrom(event.target.value)}>
-                <option value="">Not on the roster</option>
-                {roster
-                  .filter((person) => !person.isSelf)
-                  .map((person) => (
-                    <option key={person.id} value={person.id}>
-                      {person.name}
-                    </option>
-                  ))}
-              </select>
+              <Select
+                value={from}
+                onChange={setFrom}
+                options={[
+                  { value: '', label: 'Not on the roster' },
+                  ...roster
+                    .filter((person) => !person.isSelf)
+                    .map((person) => ({ value: person.id, label: person.name })),
+                ]}
+              />
             </Field>
             <Field label="What they said" hint="Paste the message as it arrived. It is never sent anywhere.">
               <textarea rows={6} value={text} onChange={(event) => setText(event.target.value)} />
             </Field>
             <div className="inline-form-foot">
+              {openIssues === 0 && <p className="foot-note">There are no open issues to link a reply to.</p>}
               <button
                 className="button primary small"
                 type="button"
                 disabled={busy || !text.trim() || openIssues === 0}
-                title={openIssues === 0 ? 'There are no open issues to link a reply to.' : ''}
                 onClick={() =>
                   void act(() =>
                     send('POST', `/api/reviews/${reviewId}/feedback`, {
@@ -1520,15 +1527,16 @@ function FeedbackDrawer({
 
         <footer className="drawer-foot">
           <p className="drawer-note">
-            {undecided > 0
-              ? 'Every link has to be decided before the next pass. Rejected links are kept — they are how precision gets measured.'
-              : 'The next pass will revisit each open issue with every accepted reply added.'}
+            {blockedReason !== ''
+              ? blockedReason
+              : undecided > 0
+                ? 'Every link has to be decided before the next pass. Rejected links are kept: they are how precision gets measured.'
+                : 'The next pass will revisit each open issue with every accepted reply added.'}
           </p>
           <button
             className="button primary"
             type="button"
             disabled={busy || blockedReason !== ''}
-            title={blockedReason}
             onClick={onRun}
           >
             Run pass {nextPass}

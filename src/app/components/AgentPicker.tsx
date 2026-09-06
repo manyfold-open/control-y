@@ -1,4 +1,5 @@
 import type { ConnectedAgent } from '../../shared/types';
+import Select from './Select';
 
 const isExpired = (agent: ConnectedAgent): boolean =>
   Boolean(agent.expiresAt && Date.parse(agent.expiresAt) <= Date.now());
@@ -9,18 +10,18 @@ export default function AgentPicker(props: {
   onSelect: (agentId: string) => void;
 }) {
   return (
-    <select
+    <Select
       className="agent-picker"
-      aria-label="Agent"
+      ariaLabel="Agent"
       value={props.selectedId ?? ''}
-      onChange={(event) => props.onSelect(event.target.value)}
-    >
-      {props.agents.map((agent) => (
-        <option key={agent.agentId} value={agent.agentId} disabled={isExpired(agent)}>
-          {agent.name}
-          {isExpired(agent) ? ' (authorization expired)' : agent.verified ? '' : ' (unverified)'}
-        </option>
-      ))}
-    </select>
+      placeholder="Pick an agent"
+      onChange={props.onSelect}
+      options={props.agents.map((agent) => ({
+        value: agent.agentId,
+        label: agent.name,
+        note: isExpired(agent) ? 'authorization expired' : agent.verified ? undefined : 'unverified',
+        disabled: isExpired(agent),
+      }))}
+    />
   );
 }
