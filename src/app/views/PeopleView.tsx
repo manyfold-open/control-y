@@ -8,7 +8,8 @@
 import { useState } from 'react';
 import type { Person, ReviewDetail, Workspace } from '../../shared/types';
 import { send } from '../api';
-import { errorText, initials, useResource } from '../lib';
+import { errorText, useResource } from '../lib';
+import Avatar from '../components/Avatar';
 import Icon from '../components/Icon';
 import Modal, { Field } from '../components/Modal';
 import Skeleton from '../components/Skeleton';
@@ -67,7 +68,7 @@ export default function PeopleView({
             return (
               <button key={person.id} type="button" className="people-row" onClick={() => setEditing(person)}>
                 <span className="person">
-                  <span className={person.isSelf ? 'avatar self' : 'avatar'}>{initials(person.name)}</span>
+                  <Avatar id={person.id} name={person.name} isSelf={person.isSelf} large />
                   <span className="person-name">
                     <span className="person-line">{person.name}</span>
                     <span className="person-org">{person.org}</span>

@@ -168,3 +168,8 @@ AI agents working on this codebase.
 ## License
 
 [MIT](LICENSE)
+
+The four portraits in `public/people/` are [Notionists](https://www.figma.com/community/file/1138441118637722104)
+by Zoish, generated with [DiceBear](https://www.dicebear.com) and licensed
+[CC BY 4.0](https://creativecommons.org/licenses/by/4.0/). They stand in for the
+seeded directory, and nobody in it is a real person.

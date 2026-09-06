@@ -41,7 +41,6 @@ import {
   formatBytes,
   formatElapsed,
   formatWhen,
-  initials,
   useCopy,
   useDialogChrome,
   useDragDismiss,
@@ -52,6 +51,7 @@ import {
 } from '../lib';
 import { diffWords } from '../../shared/diff';
 import { evidenceText } from '../../shared/evidence';
+import Avatar from '../components/Avatar';
 import Convergence from '../components/Convergence';
 import Icon from '../components/Icon';
 import Modal, { Field } from '../components/Modal';
@@ -905,9 +905,7 @@ function IssueDetail({
           </div>
         ) : (
           <div className="assignee">
-            <span className={assignee?.isSelf ? 'avatar self' : 'avatar'}>
-              {assignee ? initials(assignee.name) : ''}
-            </span>
+            <Avatar id={assignee?.id} name={assignee?.name ?? ''} isSelf={assignee?.isSelf ?? false} />
             <div className="assignee-body">
               <span className="assignee-name">
                 {assignee?.name ?? 'Nobody yet'}
@@ -1888,7 +1886,7 @@ function FeedbackDrawer({
                   aria-expanded={isOpen}
                   onClick={() => setOpenKey(isOpen ? null : key)}
                 >
-                  <span className="avatar">{initials(entry.person.name)}</span>
+                  <Avatar id={entry.person.id} name={entry.person.name} isSelf={entry.person.isSelf} />
                   <span className="correspondent-id">
                     <span className="correspondent-name">{entry.person.name}</span>
                     <span className="correspondent-org">{entry.person.org}</span>
