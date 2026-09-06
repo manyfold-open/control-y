@@ -1135,7 +1135,15 @@ code {
 
 .evidence-record {
   display: grid;
-  grid-template-columns: minmax(0, max-content) minmax(0, max-content) minmax(0, 1fr);
+  /* The pair is what the panel read: the line, and what that line holds. The
+     field takes only what it needs, capped at 45% so one long field cannot push
+     the value off the row. fit-content() is a track size in its own right and
+     is invalid inside minmax(), which drops the declaration silently and
+     collapses the record to a single column. */
+  grid-template-columns: fit-content(45%) minmax(0, 1fr);
+  /* Carried as a variable so the stacked path can zero it by re-declaring one
+     value, rather than by out-specifying four selectors. */
+  --evidence-row-step: var(--space-sm);
   align-items: baseline;
   gap: var(--space-xxs) var(--space-lg);
   margin: 0;
@@ -1144,27 +1152,67 @@ code {
 
 .evidence-row { display: contents; }
 
-.evidence-field { color: var(--steel); font: 400 13px/1.5 var(--font-sans); }
+.evidence-field { color: var(--steel); font: 400 13px/1.5 var(--font-sans); overflow-wrap: anywhere; }
 
 .evidence-value {
   margin: 0;
   color: var(--charcoal);
   font: 400 13px/1.5 var(--font-mono);
   font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
 }
 
-.evidence-note { margin: 0; color: var(--judgment-ink); font: 400 13px/1.5 var(--font-sans); }
+/* The note sits under the pair it is about, across the full width, rather than
+   in a third column beside it.
 
-/* Stacked once three columns stop fitting — a note wrapping inside 120px is
-   four words a line, and at a 4px row gap the rows stop being rows. Stacking
-   needs the rule back between them to say where each one ends. */
-@container (max-width: 520px) {
-  .evidence-record { grid-template-columns: minmax(0, 1fr); gap: 0; }
+   It was a third column, and the seed made that look right: a note there is
+   four words and the field and value are one word each. The panel writes
+   sentences into all three, and three sentence columns do not fit — worse, the
+   sizing decided who lost. Two max-content tracks take their full width before
+   a 1fr track gets anything, so the note, the longest of the three and the only
+   one that says why any of this is a finding, was the one starved: 96px inside
+   an 818px block, one word a line, and clipped by this figure's own overflow.
+   Full width is also what it wants on its merits, being the reasoning.
+
+   Still in the margin, just the margin below rather than the margin right: the
+   amber and the sans are untouched, and only the note carries a colour. */
+.evidence-note {
+  grid-column: 1 / -1;
+  margin: 0;
+  max-width: 74ch;
+  color: var(--judgment-ink);
+  font: 400 13px/1.5 var(--font-sans);
+  overflow-wrap: anywhere;
+}
+
+/* A row with nothing to say leaves no gap where its note would have been. */
+.evidence-note:empty { display: none; }
+
+/* A row is two lines deep when it carries a note, so the gap inside one has to
+   be smaller than the gap between two or the record reads as one block of text:
+   4px within, 16px between. The space is asked for by both neighbours of a
+   note, so a note is never equidistant from the row above it and the row below,
+   which is the one way it could be read against the wrong line.
+
+   Only where a note is, though. A sheet excerpt is usually all one-line rows,
+   and that record stays as tight as it was. The margin goes on the cells rather
+   than the row so `display: contents` holds, and with it the field column
+   staying in step down the whole record. */
+.evidence-row:has(.evidence-note:not(:empty)) + .evidence-row > .evidence-field,
+.evidence-row:has(.evidence-note:not(:empty)) + .evidence-row > .evidence-value,
+.evidence-row + .evidence-row:has(.evidence-note:not(:empty)) > .evidence-field,
+.evidence-row + .evidence-row:has(.evidence-note:not(:empty)) > .evidence-value {
+  margin-top: var(--evidence-row-step);
+}
+
+/* Below this the pair stops fitting side by side and stacks too, so the field
+   sits over its value. The rule comes back to say where each record ends. */
+@container (max-width: 420px) {
+  .evidence-record { grid-template-columns: minmax(0, 1fr); gap: 0; --evidence-row-step: 0px; }
   .evidence-row { display: grid; gap: 2px; padding: var(--space-xs) 0; }
   .evidence-row:first-child { padding-top: 0; }
   .evidence-row:last-child { padding-bottom: 0; }
   .evidence-row + .evidence-row { border-top: 1px solid var(--hairline-soft); }
-  .evidence-note:empty { display: none; }
 }
 
 
