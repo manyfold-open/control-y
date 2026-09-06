@@ -18,6 +18,7 @@ import { useResource } from './lib';
 import ChatView from './components/ChatView';
 import SettingsView from './components/SettingsView';
 import PasswordGate from './components/PasswordGate';
+import Avatar from './components/Avatar';
 import Icon from './components/Icon';
 import Logo from './components/Logo';
 import Skeleton from './components/Skeleton';
@@ -103,6 +104,7 @@ export default function App() {
   }, [reloadWorkspace]);
 
   const openIssues = workspace.data?.openIssues ?? 0;
+  const self = workspace.data?.people.find((person) => person.isSelf);
 
   return (
     <div className="app">
@@ -130,10 +132,10 @@ export default function App() {
         </div>
 
         <div className="rail-foot">
-          <span className="avatar self">YOU</span>
+          <Avatar id={self?.id} name="You" isSelf />
           <span className="rail-identity">
             <b>Fund manager</b>
-            <span>{workspace.data?.people.find((person) => person.isSelf)?.org ?? 'Workspace'}</span>
+            <span>{self?.org ?? 'Workspace'}</span>
           </span>
         </div>
       </nav>
