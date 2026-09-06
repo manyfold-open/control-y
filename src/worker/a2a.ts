@@ -17,6 +17,9 @@ import type { AgentCredential } from './types';
 
 const PROBE_TIMEOUT_MS = 20_000;
 const CARD_TIMEOUT_MS = 10_000;
+const TASK_TIMEOUT_MS = 20_000;
+/** How often a turn that lost its stream asks after the task it was watching. */
+const TASK_POLL_MS = 5_000;
 const ERROR_TEXT_LIMIT = 600;
 
 export class A2AError extends Error {
@@ -319,13 +322,7 @@ export function foldA2AResults(results: unknown[]): StreamSnapshot {
   return snapshotFrom(accumulator);
 }
 
-/**
- * One `message/stream` turn. Emits a snapshot after every SSE event and resolves with
- * the final one. Requires the endpoint to answer with text/event-stream — there is no
- * `message/send` fallback, by design: Manyfold agents stream, and one protocol path
- * keeps this template small.
- */
-export async function consumeA2AStream(options: {
+export interface StreamOptions {
   cred: AgentCredential;
   params: Record<string, unknown>;
   signal: AbortSignal;
@@ -338,7 +335,108 @@ export async function consumeA2AStream(options: {
    * signal that something is actually wrong.
    */
   idleMs?: number;
-}): Promise<StreamSnapshot> {
+  /**
+   * Follow the task by polling when the stream dies under it. Off by default,
+   * because a caller that has nowhere to put a late answer should fail fast.
+   */
+  resume?: boolean;
+}
+
+/**
+ * One `message/stream` turn. Emits a snapshot after every SSE event and resolves with
+ * the final one. Requires the endpoint to answer with text/event-stream — there is no
+ * `message/send` fallback, by design: Manyfold agents stream, and one protocol path
+ * keeps this template small.
+ *
+ * With `resume`, a turn survives losing its stream. MEASURED on r-7b4d4c93: a pass
+ * that completed in four minutes lost four of its five reviewers to "Network
+ * connection lost." mid-turn, and reported nothing at all. The turn itself was fine
+ * — it was the pipe that broke — so the work was there to be collected, and the
+ * delegation it was still holding open on the agent went on holding it, which is
+ * how the next pass met "too many concurrent A2A delegations (8/8)".
+ *
+ * Recovery is `tasks/get`, never a second `message/send`: asking after a task is
+ * free, and re-sending would bill the turn twice.
+ */
+export async function consumeA2AStream(options: StreamOptions): Promise<StreamSnapshot> {
+  const accumulator = createAccumulator();
+  try {
+    const snapshot = await readA2AStream(options, accumulator);
+    // A stream that ends without a verdict ended early, whatever the socket
+    // claims: the task is still out there, and it is the task that has the answer.
+    if (snapshot.terminal || !options.resume) return snapshot;
+    return await followTask(options, accumulator, null);
+  } catch (error) {
+    const failure = error instanceof A2AError ? error : null;
+    if (!options.resume || !failure?.retryable || !accumulator.taskId) throw error;
+    return await followTask(options, accumulator, failure);
+  }
+}
+
+/**
+ * Polls a task the stream lost until it settles, folding each answer into the same
+ * accumulator so anything already received survives the drop.
+ *
+ * `cause` is the failure that got us here, and it stands unless the agent actually
+ * says something better: an endpoint that cannot answer `tasks/get` must not turn a
+ * clear transport error into a confusing one about task lookup.
+ */
+async function followTask(
+  options: StreamOptions,
+  accumulator: StreamAccumulator,
+  cause: A2AError | null,
+): Promise<StreamSnapshot> {
+  const { cred, signal } = options;
+  const taskId = accumulator.taskId;
+  if (!taskId) throw cause ?? new A2AError(`${cred.label} stream ended without a task.`, true);
+
+  while (!signal.aborted) {
+    let response: Response;
+    try {
+      response = await fetchTimeout(
+        cred.rpcUrl,
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json', authorization: `Bearer ${cred.token}` },
+          body: rpcBody('tasks/get', { id: taskId }),
+          redirect: 'manual',
+        },
+        TASK_TIMEOUT_MS,
+      );
+    } catch (error) {
+      throw cause ?? error;
+    }
+    if (!response.ok) throw cause ?? (await httpFailure(response, cred.label));
+
+    const envelope = (await response.json().catch(() => null)) as Record<string, unknown> | null;
+    if (!envelope || envelope.error) throw cause ?? jsonRpcError(envelope?.error, cred.label);
+    applyA2AResult(accumulator, envelope.result);
+    const snapshot = snapshotFrom(accumulator);
+    await options.onSnapshot?.(snapshot);
+    if (snapshot.terminal) return snapshot;
+    await sleep(TASK_POLL_MS, signal);
+  }
+  throw cause ?? new A2AError(`${cred.label} stream timed out.`, true);
+}
+
+/** Resolves after `ms`, or as soon as the turn's ceiling runs out. */
+function sleep(ms: number, signal: AbortSignal): Promise<void> {
+  return new Promise((resolve) => {
+    let timer: ReturnType<typeof setTimeout>;
+    const done = () => {
+      clearTimeout(timer);
+      signal.removeEventListener('abort', done);
+      resolve();
+    };
+    timer = setTimeout(done, ms);
+    signal.addEventListener('abort', done, { once: true });
+  });
+}
+
+async function readA2AStream(
+  options: StreamOptions,
+  accumulator: StreamAccumulator,
+): Promise<StreamSnapshot> {
   const { cred, idleMs } = options;
 
   // Own controller so an idle stream can be dropped without touching the
@@ -399,7 +497,6 @@ export async function consumeA2AStream(options: {
   }
   if (!response.body) throw new A2AError(`${cred.label} streaming response had no body.`, true);
 
-  const accumulator = createAccumulator();
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
   let buffer = '';
@@ -411,7 +508,10 @@ export async function consumeA2AStream(options: {
         chunk = await reader.read();
       } catch (error) {
         if ((error as Error)?.name === 'AbortError') throw stalled();
-        throw error;
+        // "Network connection lost." lands here: the socket went, not the turn.
+        // Typed as retryable so a caller with `resume` can go and ask the agent
+        // what became of the task it was in the middle of telling us about.
+        throw new A2AError(safeErrorText(error instanceof Error ? error.message : error), true);
       }
       if (chunk.done) break;
       // Bytes arrived, so the stream is alive whatever it is working on.

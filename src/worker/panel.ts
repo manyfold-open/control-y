@@ -254,6 +254,11 @@ async function ask(
       },
       signal: controller.signal,
       idleMs: TURN_IDLE_MS,
+      // A pass is the one place with somewhere to put a late answer: the turn has
+      // already been paid for and the pass is going to wait for the other
+      // reviewers regardless, so a lost socket should cost a poll, not the
+      // reviewer. See consumeA2AStream.
+      resume: true,
     });
     const text = snapshot.text.trim();
     if (!text) throw new A2AError(`${cred.label} answered with no text.`, true);

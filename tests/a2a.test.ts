@@ -1,5 +1,5 @@
-import { describe, expect, it } from 'vitest';
-import { A2AError, foldA2AResults, safeErrorText, validateA2AUrl } from '../src/worker/a2a';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { A2AError, consumeA2AStream, foldA2AResults, safeErrorText, validateA2AUrl } from '../src/worker/a2a';
 
 describe('foldA2AResults (stream accumulator)', () => {
   it('accumulates artifact appends and reaches a terminal state', () => {
@@ -119,5 +119,115 @@ describe('safeErrorText', () => {
   it('collapses whitespace and truncates', () => {
     expect(safeErrorText('a\n\n  b')).toBe('a b');
     expect(safeErrorText('x'.repeat(2000)).length).toBeLessThanOrEqual(600);
+  });
+});
+
+/* ───────── recovering a turn whose stream died ───────── */
+
+const cred = { rpcUrl: 'https://agent.example/rpc', token: 'tok', label: 'ctrl-y-02' };
+
+const frame = (result: unknown): string =>
+  `data: ${JSON.stringify({ jsonrpc: '2.0', id: '1', result })}\n\n`;
+
+/**
+ * An SSE response that hands over `frames` and then either closes or has its
+ * connection cut. The frames go out through `pull` rather than up front because
+ * `controller.error()` discards anything still queued, and the point of the test
+ * is a stream that dies *after* saying who it is.
+ */
+function sseResponse(frames: string[], cut: boolean): Response {
+  const encoder = new TextEncoder();
+  let next = 0;
+  const body = new ReadableStream({
+    pull(controller) {
+      if (next < frames.length) {
+        controller.enqueue(encoder.encode(frames[next++]));
+        return;
+      }
+      if (cut) controller.error(new Error('Network connection lost.'));
+      else controller.close();
+    },
+  });
+  return new Response(body, { headers: { 'content-type': 'text/event-stream' } });
+}
+
+const jsonResponse = (payload: unknown): Response =>
+  new Response(JSON.stringify(payload), { headers: { 'content-type': 'application/json' } });
+
+const WORKING = frame({ kind: 'status-update', taskId: 't1', contextId: 'c1', status: { state: 'working' } });
+
+const FINISHED_TASK = {
+  jsonrpc: '2.0',
+  id: '2',
+  result: {
+    kind: 'task',
+    id: 't1',
+    contextId: 'c1',
+    status: { state: 'completed' },
+    artifacts: [{ artifactId: 'a', parts: [{ kind: 'text', text: '{"findings":[]}' }] }],
+  },
+};
+
+/** Records every call so a test can assert which A2A method was used. */
+function stubFetch(responses: Response[]): { methods: string[] } {
+  const methods: string[] = [];
+  vi.stubGlobal('fetch', async (_url: string, init: RequestInit) => {
+    methods.push(JSON.parse(String(init.body)).method);
+    const response = responses.shift();
+    if (!response) throw new Error('unexpected extra request');
+    return response;
+  });
+  return { methods };
+}
+
+describe('consumeA2AStream, when the stream dies mid-turn', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  const run = (resume: boolean) =>
+    consumeA2AStream({
+      cred,
+      params: { message: { kind: 'message', role: 'user', parts: [] } },
+      signal: new AbortController().signal,
+      resume,
+    });
+
+  it('collects the answer with tasks/get instead of resending the turn', async () => {
+    const { methods } = stubFetch([sseResponse([WORKING], true), jsonResponse(FINISHED_TASK)]);
+
+    const snapshot = await run(true);
+
+    expect(snapshot.text).toBe('{"findings":[]}');
+    expect(snapshot.terminal).toBe(true);
+    // Never a second message/send: that would bill the turn twice.
+    expect(methods).toEqual(['message/stream', 'tasks/get']);
+  });
+
+  it('follows a stream that ends early without a verdict', async () => {
+    const { methods } = stubFetch([sseResponse([WORKING], false), jsonResponse(FINISHED_TASK)]);
+    const snapshot = await run(true);
+    expect(snapshot.text).toBe('{"findings":[]}');
+    expect(methods).toEqual(['message/stream', 'tasks/get']);
+  });
+
+  it('keeps the transport failure when the agent cannot answer for the task', async () => {
+    stubFetch([
+      sseResponse([WORKING], true),
+      jsonResponse({ jsonrpc: '2.0', id: '2', error: { code: -32001, message: 'no such task' } }),
+    ]);
+    await expect(run(true)).rejects.toThrow('Network connection lost.');
+  });
+
+  it('fails fast without resume, and asks nothing further', async () => {
+    const { methods } = stubFetch([sseResponse([WORKING], true)]);
+    await expect(run(false)).rejects.toThrow('Network connection lost.');
+    expect(methods).toEqual(['message/stream']);
+  });
+
+  it('cannot follow a stream that died before naming its task', async () => {
+    const { methods } = stubFetch([sseResponse([], true)]);
+    await expect(run(true)).rejects.toThrow(A2AError);
+    expect(methods).toEqual(['message/stream']);
   });
 });
