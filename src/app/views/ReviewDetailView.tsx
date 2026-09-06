@@ -10,7 +10,17 @@
  * review is polled. Nothing else here is live.
  */
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useId,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from 'react';
+import { createPortal } from 'react-dom';
 import type {
   FeedbackBatch,
   Issue,
@@ -45,6 +55,7 @@ import { evidenceText } from '../../shared/evidence';
 import Convergence from '../components/Convergence';
 import Icon from '../components/Icon';
 import Modal, { Field } from '../components/Modal';
+import { addFilesToReview, limitsOf, megabytes, rejectionFor } from '../upload';
 import RetrospectivePanel from '../components/RetrospectivePanel';
 import Select from '../components/Select';
 import Skeleton from '../components/Skeleton';
@@ -230,7 +241,7 @@ export default function ReviewDetailView({
   const [selectedId, setSelectedId] = useState('');
   const [passOpen, setPassOpen] = useState(false);
   const [drawerOpen, setDrawerOpen] = useState(false);
-  const [overlayOpen, setOverlayOpen] = useState(false);
+  const [menuOpen, setMenuOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   /** Only the gap between pressing Run and the pass existing; `running` takes over. */
@@ -309,36 +320,51 @@ export default function ReviewDetailView({
       .filter((group) => group.issues.length > 0);
   }, [visible, data, selfId]);
 
-  /* Arrow keys walk the queue. Reaching for the mouse to advance would make
-     this a list with extra steps. Typing into a field always wins, and so does
-     anything layered over the queue. */
+  /** One step along the queue, wrapping at either end. Both the keys and the
+   *  two keycaps in the strip come through here. */
+  const stepQueue = useCallback(
+    (delta: number) => {
+      setSelectedId((current) => {
+        if (visible.length === 0) return current;
+        const at = visible.findIndex((issue) => issue.id === current);
+        const from = at < 0 ? 0 : at;
+        return visible[(from + delta + visible.length) % visible.length].id;
+      });
+    },
+    [visible],
+  );
+
+  /* ← and → walk the queue, and ↑ and ↓ deliberately do not.
+     The queue is drawn as a horizontal run of marks and read as "3 of 8" along
+     that same axis, so sideways is the direction the strip already promises.
+     The issue under it, meanwhile, scrolls downward — binding the vertical keys
+     to the queue took them away from the reader exactly when an issue was long
+     enough to need them, and jumped the page instead of scrolling it. They go
+     back to the document. Typing into a field always wins, and so does anything
+     layered over the queue. */
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
       if (event.metaKey || event.ctrlKey || event.altKey) return;
-      if (overlayOpen || drawerOpen || settingsOpen) return;
+      if (menuOpen || drawerOpen || settingsOpen) return;
 
       const target = event.target as HTMLElement | null;
       if (target && (/^(INPUT|TEXTAREA|SELECT)$/.test(target.tagName) || target.isContentEditable)) return;
 
       const step =
-        event.key === 'ArrowDown' || event.key === 'j'
+        event.key === 'ArrowRight' || event.key === 'l'
           ? 1
-          : event.key === 'ArrowUp' || event.key === 'k'
+          : event.key === 'ArrowLeft' || event.key === 'h'
             ? -1
             : 0;
       if (step === 0 || visible.length === 0) return;
 
       event.preventDefault();
-      setSelectedId((current) => {
-        const at = visible.findIndex((issue) => issue.id === current);
-        const from = at < 0 ? 0 : at;
-        return visible[(from + step + visible.length) % visible.length].id;
-      });
+      stepQueue(step);
     };
 
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [visible, overlayOpen, drawerOpen, settingsOpen]);
+  }, [visible.length, stepQueue, menuOpen, drawerOpen, settingsOpen]);
 
   if (resource.error) {
     return (
@@ -579,14 +605,50 @@ export default function ReviewDetailView({
             </span>
           )}
 
+          {/* The two keys, as two controls. They were keycaps drawn beside a
+              button — they read as a stepper, sat where a stepper goes, and did
+              nothing when pressed. Now they step, and still say which keys do
+              the same thing. */}
           <div className="queue-aside">
-            <button className="button subtle small" type="button" onClick={() => setOverlayOpen(true)}>
-              <Icon name="list" /> All issues
-            </button>
-            <span className="queue-keys" aria-hidden>
-              <kbd>↑</kbd>
-              <kbd>↓</kbd>
+            <span className="queue-steps">
+              <button
+                className="queue-step"
+                type="button"
+                aria-label="Previous issue"
+                title="Previous issue (←)"
+                onClick={() => stepQueue(-1)}
+              >
+                ←
+              </button>
+              <button
+                className="queue-step"
+                type="button"
+                aria-label="Next issue"
+                title="Next issue (→)"
+                onClick={() => stepQueue(1)}
+              >
+                →
+              </button>
             </span>
+
+            <QueueMenu
+              open={menuOpen}
+              groups={groups}
+              filter={filter}
+              counts={counts}
+              selfId={selfId}
+              selectedId={selected?.id ?? ''}
+              reviewName={review.name}
+              copyLabel={copyLabel}
+              copy={copy}
+              onFilter={setFilter}
+              onOpen={() => setMenuOpen(true)}
+              onClose={() => setMenuOpen(false)}
+              onSelect={(id) => {
+                setSelectedId(id);
+                setMenuOpen(false);
+              }}
+            />
           </div>
         </div>
       )}
@@ -613,25 +675,6 @@ export default function ReviewDetailView({
           </p>
         )}
       </div>
-
-      {overlayOpen && (
-        <QueueOverlay
-          groups={groups}
-          filter={filter}
-          counts={counts}
-          selfId={selfId}
-          selectedId={selected?.id ?? ''}
-          reviewName={review.name}
-          copyLabel={copyLabel}
-          copy={copy}
-          onFilter={setFilter}
-          onSelect={(id) => {
-            setSelectedId(id);
-            setOverlayOpen(false);
-          }}
-          onClose={() => setOverlayOpen(false)}
-        />
-      )}
 
       {drawerOpen && (
         <FeedbackDrawer
@@ -1109,32 +1152,11 @@ function RememberDialog({
 
 /* ── Review settings and documents ─────────────────────────────────────────── */
 
-const TEXT_FILE = /\.(txt|csv|tsv|md|json|log|xml|yaml|yml|html|htm|css|js|jsx|ts|tsx|sql|rtf)$/i;
-const VIDEO_FILE = /\.(3gp|avi|flv|m2ts|m4v|mkv|mov|mp4|mpeg|mpg|ogv|vob|webm|wmv)$/i;
-
-const isVideoFile = (file: File): boolean => file.type.toLowerCase().startsWith('video/') || VIDEO_FILE.test(file.name);
-const isTextFile = (file: File): boolean => file.type.toLowerCase().startsWith('text/') || TEXT_FILE.test(file.name);
-
-const megabytes = (bytes: number): string => `${Math.round(bytes / (1024 * 1024))} MB`;
-
-interface UploadTicket {
-  documentId: string;
-  uploadUrl: string;
-  mediaType: string;
-}
-
-/**
- * Uploads straight to R2 with the presigned URL, so the bytes never pass through
- * the Worker. The content-type is signed into that URL, so it has to be sent back
- * exactly — anything else and R2 rejects the signature.
- */
-async function putToR2(uploadUrl: string, file: File, mediaType: string): Promise<void> {
-  const response = await fetch(uploadUrl, {
-    method: 'PUT',
-    headers: { 'content-type': mediaType },
-    body: file,
-  });
-  if (!response.ok) throw new Error(`The upload was refused (HTTP ${response.status}).`);
+interface QueuedFile {
+  key: string;
+  file: File;
+  failed: boolean;
+  error: string;
 }
 
 function ReviewSettings({
@@ -1158,89 +1180,62 @@ function ReviewSettings({
   const [period, setPeriod] = useState(review.period);
   const [docName, setDocName] = useState('');
   const [docContent, setDocContent] = useState('');
-  const [pending, setPending] = useState<File | null>(null);
+  /** Files still going up, and the ones that could not. Anything that lands
+      leaves this list and reappears below as a document of the review. */
+  const [queue, setQueue] = useState<QueuedFile[]>([]);
   const [readError, setReadError] = useState('');
-  const [uploading, setUploading] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const picker = useRef<HTMLInputElement>(null);
 
   const dirty = name.trim() !== review.name || counterparty !== review.counterparty || period !== review.period;
-  const maxBytes = workspace?.maxUploadBytes ?? 10 * 1024 * 1024;
-  const uploadsEnabled = workspace?.uploadsEnabled ?? false;
+  const limits = limitsOf(workspace);
 
   /**
-   * Nothing is read here beyond a text file's own text. A binary is only held as
-   * a File handle until Add is pressed — the size is checked first, so an
-   * oversized pick costs nothing rather than being read and encoded before the
-   * server refuses it.
+   * The review already exists here, so there is nothing to wait for: a dropped
+   * file is checked, sent, and either becomes a document row below or stays in
+   * the queue saying why it did not.
    */
-  const pickFile = (file: File | undefined) => {
-    if (!file) return;
-    if (isVideoFile(file)) {
-      setReadError('Video files are not supported yet. Choose any other file type.');
-      return;
-    }
-    if (file.size > maxBytes) {
-      setReadError(
-        `${file.name} is ${formatBytes(file.size)}. The limit is ${megabytes(maxBytes)}. Paste an extract as text instead.`,
-      );
-      return;
-    }
+  const take = async (picked: FileList | null) => {
+    if (!picked || picked.length === 0) return;
+    const fresh: QueuedFile[] = Array.from(picked).map((file) => {
+      const rejection = rejectionFor(file, limits);
+      return {
+        key: `${file.name}:${file.size}:${file.lastModified}`,
+        file,
+        failed: rejection !== '',
+        error: rejection,
+      };
+    });
+    setQueue((current) => [...current.filter((row) => !fresh.some((one) => one.key === row.key)), ...fresh]);
+
+    const sending = fresh.filter((row) => !row.failed);
+    if (sending.length === 0) return;
     setReadError('');
-    setDocName(file.name);
-    if (isTextFile(file)) {
-      setPending(null);
-      file
-        .text()
-        .then(setDocContent)
-        .catch(() => setReadError('Could not read that file. Try choosing it again or paste its contents.'));
-    } else {
-      if (!uploadsEnabled) {
-        setReadError('File uploads are not configured on this deployment. Paste an extract as text instead.');
-        return;
-      }
-      setPending(file);
+    await act(() =>
+      addFilesToReview(
+        review.id,
+        sending.map(({ key, file }) => ({ key, file })),
+        limits,
+        (key, failure) =>
+          setQueue((current) =>
+            failure
+              ? current.map((row) => (row.key === key ? { ...row, failed: true, error: failure } : row))
+              : current.filter((row) => row.key !== key),
+          ),
+      ),
+    );
+  };
+
+  const drop = useFileDrop((files) => void take(files));
+
+  /** Pasted text is prompt material, not a file: it goes straight to the API. */
+  const addExtract = async () => {
+    const ok = await act(() =>
+      send('POST', `/api/reviews/${review.id}/documents`, { name: docName.trim(), content: docContent }),
+    );
+    if (ok) {
+      setDocName('');
       setDocContent('');
-    }
-  };
-
-  const drop = useFileDrop((file) => pickFile(file));
-
-  const clearDocumentDraft = () => {
-    setDocName('');
-    setDocContent('');
-    setPending(null);
-  };
-
-  /** Text goes straight to the API. A file is uploaded to R2 first, then confirmed. */
-  const addDocument = async () => {
-    if (!pending) {
-      const ok = await act(() =>
-        send('POST', `/api/reviews/${review.id}/documents`, { name: docName.trim(), content: docContent }),
-      );
-      if (ok) clearDocumentDraft();
-      return;
-    }
-    setUploading(true);
-    setReadError('');
-    try {
-      const ticket = await send<UploadTicket>('POST', `/api/reviews/${review.id}/documents/upload-url`, {
-        name: docName.trim(),
-        mediaType: pending.type || 'application/octet-stream',
-        bytes: pending.size,
-      });
-      await putToR2(ticket.uploadUrl, pending, ticket.mediaType);
-      const ok = await act(() =>
-        send('POST', `/api/reviews/${review.id}/documents`, {
-          name: docName.trim(),
-          documentId: ticket.documentId,
-          mediaType: ticket.mediaType,
-        }),
-      );
-      if (ok) clearDocumentDraft();
-    } catch (caught) {
-      setReadError(errorText(caught));
-    } finally {
-      setUploading(false);
     }
   };
 
@@ -1291,60 +1286,79 @@ function ReviewSettings({
             </div>
           ))}
 
-          {/* The whole panel is the target, not a dashed rectangle bolted under
-              it: the reader is already dragging the file when they look for
-              somewhere to put it, and a second box costs the height of one. */}
-          <div className={drop.dragging ? 'doc-add dropping' : 'doc-add'} {...drop.handlers}>
-            <Field label="Add a document">
-              <input value={docName} onChange={(event) => setDocName(event.target.value)} placeholder="staging.xlsx (extract)" />
-            </Field>
-            {pending ? (
-              <div className="file-preview" aria-live="polite">
-                <strong>{pending.name}</strong>
-                <span>
-                  {formatBytes(pending.size)} · Ready to upload · {pending.type || 'application/octet-stream'}
+          <div className={drop.dragging ? 'doc-drop dragging' : 'doc-drop'} {...drop.handlers}>
+            {queue.length === 0 ? (
+              <button type="button" className="drop-zone" onClick={() => picker.current?.click()}>
+                <Icon name="reviews" size={22} />
+                <span className="drop-zone-line">Drop the documents the panel should read</span>
+                <span className="drop-zone-note">
+                  {limits.uploadsEnabled
+                    ? `or choose files · up to ${megabytes(limits.maxBytes)} each`
+                    : 'or choose files · text files only on this deployment'}
                 </span>
-                <span className="file-preview-note">
-                  The panel downloads it and reads it during a pass.
-                </span>
-              </div>
+              </button>
             ) : (
-              <Field
-                label="Its text"
-                hint={
-                  uploadsEnabled
-                    ? `Paste an extract, or load a file up to ${megabytes(maxBytes)}.`
-                    : 'Paste an extract. File uploads are not configured on this deployment.'
-                }
-              >
-                <textarea rows={5} value={docContent} onChange={(event) => setDocContent(event.target.value)} />
-              </Field>
+              <div className="doc-queue" aria-live="polite">
+                {queue.map((row) => (
+                  <div key={row.key} className={row.failed ? 'doc-queue-row failed' : 'doc-queue-row uploading'}>
+                    <Icon name={row.failed ? 'alert' : 'reviews'} />
+                    <span className="doc-name">{row.file.name}</span>
+                    <span className="doc-queue-why">{row.failed ? row.error : 'uploading…'}</span>
+                    {row.failed && (
+                      <button
+                        className="button icon ghost"
+                        type="button"
+                        aria-label={`Dismiss ${row.file.name}`}
+                        onClick={() => setQueue((current) => current.filter((one) => one.key !== row.key))}
+                      >
+                        <Icon name="x" />
+                      </button>
+                    )}
+                  </div>
+                ))}
+                <button type="button" className="doc-queue-add" onClick={() => picker.current?.click()}>
+                  <Icon name="plus" /> Add more, or drop them here
+                </button>
+              </div>
             )}
-            {readError && <div className="notice error">{readError}</div>}
-            {drop.dragging && (
-              <p className="drop-hint" aria-hidden>
-                Drop it to read it
-              </p>
-            )}
+          </div>
+
+          <input
+            ref={picker}
+            type="file"
+            multiple
+            hidden
+            onChange={(event) => {
+              void take(event.target.files);
+              event.currentTarget.value = '';
+            }}
+          />
+
+          {readError && <div className="notice error">{readError}</div>}
+
+          {/* Pasting is not a lesser way of loading a file: an extract out of a
+              spreadsheet or the body of an email is often the only form the
+              evidence comes in. It keeps its own name because it has no file to
+              take one from. */}
+          <div className="doc-add">
+            <Field label="Or paste an extract">
+              <input
+                value={docName}
+                onChange={(event) => setDocName(event.target.value)}
+                placeholder="staging.xlsx (extract)"
+              />
+            </Field>
+            <Field label="Its text">
+              <textarea rows={4} value={docContent} onChange={(event) => setDocContent(event.target.value)} />
+            </Field>
             <div className="inline-form-foot">
-              <label className="button small file-button">
-                Load a file
-                <input
-                  type="file"
-                  accept="*/*"
-                  onChange={(event) => {
-                    pickFile(event.target.files?.[0]);
-                    event.currentTarget.value = '';
-                  }}
-                />
-              </label>
               <button
                 className="button primary small"
                 type="button"
-                disabled={busy || uploading || !docName.trim() || (!pending && !docContent.trim())}
-                onClick={() => void addDocument()}
+                disabled={busy || !docName.trim() || !docContent.trim()}
+                onClick={() => void addExtract()}
               >
-                {uploading ? 'Uploading…' : 'Add document'}
+                Add document
               </button>
             </div>
           </div>
@@ -1434,9 +1448,79 @@ function ReviewSettings({
    The queue moves you through one decision at a time, which costs you the
    glance across all of them. This is that glance, and the only place the
    filters live: scanning and filtering are the same act, and neither belongs
-   in the way while you are deciding. */
+   in the way while you are deciding.
 
-function QueueOverlay({
+   It opens from its own button, and this is the second try at that. The first
+   was a full-height layer pinned to the left edge of the window: it covered the
+   workspace rail, so a panel about one review's issues arrived wearing the
+   app's navigation, from the opposite side of the screen to the control that
+   asked for it, behind a dimmed page that hid the issue you were choosing
+   against. Anchored under its own trigger it is what it actually is — a list
+   you opened, its right edge flush with the button's, the work still legible
+   behind it, closing on Escape, on a pick, or on a press anywhere else.
+
+   On a phone the anchor is meaningless: 460px does not hang off a 375px
+   button. There it rises from the bottom edge instead, which is where every
+   other sheet in this app opens and where the thumb already is. */
+
+/** Below this the panel stops being a dropdown and becomes a bottom sheet. */
+const SHEET_AT = 720;
+
+/** Breathing room kept between the panel and the edge of the window. */
+const MENU_GUTTER = 12;
+
+type MenuPlace =
+  | { sheet: true }
+  /** Right edge on the trigger's right edge, hanging from its bottom. */
+  | { sheet: false; top: number; right: number; maxHeight: number };
+
+/**
+ * The sheet is modal — it has a scrim, and the page behind it is out of reach —
+ * so it owes the keyboard what every other modal here owes it. The hook lives in
+ * a wrapper rather than in QueueMenu because QueueMenu never unmounts: the
+ * contract has to begin and end with the sheet, not with the trigger.
+ *
+ * The dropdown gets none of this on purpose. It is not modal, the work stays
+ * legible behind it, and trapping Tab in a popup the reader can see past would
+ * make it harder to leave than the thing it replaced.
+ */
+function MaybeSheetChrome({
+  sheet,
+  box,
+  onClose,
+  children,
+}: {
+  sheet: boolean;
+  box: React.RefObject<HTMLDivElement | null>;
+  onClose: () => void;
+  children: ReactNode;
+}) {
+  return sheet ? (
+    <SheetChrome box={box} onClose={onClose}>
+      {children}
+    </SheetChrome>
+  ) : (
+    <>{children}</>
+  );
+}
+
+function SheetChrome({
+  box,
+  onClose,
+  children,
+}: {
+  box: React.RefObject<HTMLDivElement | null>;
+  onClose: () => void;
+  children: ReactNode;
+}) {
+  /* `container`: this is a scrolling list, and the first thing in it is the
+     filter, which is where the reader is looking anyway. */
+  useDialogChrome(box, onClose, 'container');
+  return <>{children}</>;
+}
+
+function QueueMenu({
+  open,
   groups,
   filter,
   counts,
@@ -1447,8 +1531,10 @@ function QueueOverlay({
   copy,
   onFilter,
   onSelect,
+  onOpen,
   onClose,
 }: {
+  open: boolean;
   groups: { key: string; person?: RosterEntry; label: string; sub: string; issues: Issue[] }[];
   filter: FilterKey;
   counts: Record<FilterKey, number>;
@@ -1459,95 +1545,192 @@ function QueueOverlay({
   copy: (key: string, text: string) => void;
   onFilter: (key: FilterKey) => void;
   onSelect: (id: string) => void;
+  onOpen: () => void;
   onClose: () => void;
 }) {
-  const box = useRef<HTMLDivElement>(null);
-  /* `container`: this is a scrolling list, and the first thing in it is the
-     filter, which is where the reader is looking anyway. */
-  useDialogChrome(box, onClose, 'container');
+  const panelId = useId();
+  const trigger = useRef<HTMLButtonElement>(null);
+  const panel = useRef<HTMLDivElement>(null);
+  const [place, setPlace] = useState<MenuPlace | null>(null);
+
+  const measure = useCallback(() => {
+    const box = trigger.current?.getBoundingClientRect();
+    if (!box) return;
+    if (window.innerWidth <= SHEET_AT) {
+      setPlace({ sheet: true });
+      return;
+    }
+    const top = box.bottom + 6;
+    setPlace({
+      sheet: false,
+      top,
+      right: Math.max(MENU_GUTTER, window.innerWidth - box.right),
+      maxHeight: window.innerHeight - top - MENU_GUTTER,
+    });
+  }, []);
+
+  // Portaled to <body> and positioned fixed, the same as the app's own dropdown:
+  // the strip it hangs from sits inside a flex column that would clip it. Fixed
+  // is only right for as long as nothing moves, so re-measure on anything that
+  // could move it — scroll captured, to catch scrolling ancestors.
+  useLayoutEffect(() => {
+    if (!open) return;
+    measure();
+    const again = () => measure();
+    window.addEventListener('scroll', again, true);
+    window.addEventListener('resize', again);
+    return () => {
+      window.removeEventListener('scroll', again, true);
+      window.removeEventListener('resize', again);
+    };
+  }, [open, measure]);
+
+  // Escape closes and hands the keyboard back to the queue, which is where the
+  // arrow keys start working again.
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape' || event.defaultPrevented) return;
+      event.preventDefault();
+      onClose();
+      trigger.current?.focus();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [open, onClose]);
+
+  // A press outside closes it — including on the sheet's backdrop, which is why
+  // that backdrop carries no handler of its own.
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (event: MouseEvent) => {
+      const target = event.target as Node;
+      if (trigger.current?.contains(target) || panel.current?.contains(target)) return;
+      onClose();
+    };
+    document.addEventListener('mousedown', onDown);
+    return () => document.removeEventListener('mousedown', onDown);
+  }, [open, onClose]);
 
   return (
     <>
-      <div className="scrim" onClick={onClose} />
-      <div
-        ref={box}
-        className="queue-overlay"
-        role="dialog"
-        aria-label="All issues"
-        aria-modal="true"
-        tabIndex={-1}
+      <button
+        ref={trigger}
+        type="button"
+        className="button subtle small queue-open"
+        aria-haspopup="dialog"
+        aria-expanded={open}
+        aria-controls={open ? panelId : undefined}
+        onClick={() => (open ? onClose() : onOpen())}
       >
-        <header className="queue-overlay-head">
-          <nav className="segmented" aria-label="Filter issues">
-            {FILTERS.map((entry) => (
-              <button
-                key={entry.key}
-                type="button"
-                className={filter === entry.key ? 'segment active' : 'segment'}
-                onClick={() => onFilter(entry.key)}
-              >
-                {entry.label} <span className="segment-count tnum">{counts[entry.key]}</span>
-              </button>
-            ))}
-          </nav>
-          <button className="icon-button" type="button" aria-label="Close" onClick={onClose}>
-            <Icon name="x" />
-          </button>
-        </header>
+        <Icon name="list" /> All issues
+        <Icon name="chevron" size={14} />
+      </button>
 
-        <div className="queue-overlay-body" role="listbox" aria-label="Issues">
-          {groups.map((group) => (
-            <section key={group.key} className="issue-group">
-              <div className="issue-group-head">
-                <span className="issue-group-label">{group.label}</span>
-                {group.sub && <span className="issue-group-sub">{group.sub}</span>}
-                <span className="issue-group-count tnum">{group.issues.length}</span>
+      {open &&
+        place &&
+        createPortal(
+          <>
+            {/* Only the sheet dims the page. A dropdown that dimmed the issue
+                behind it would be hiding the thing being compared against. */}
+            {place.sheet && <div className="scrim" aria-hidden />}
+
+            <MaybeSheetChrome sheet={place.sheet} box={panel} onClose={onClose}>
+            <div
+              ref={panel}
+              id={panelId}
+              role="dialog"
+              aria-label="All issues"
+              aria-modal={place.sheet || undefined}
+              tabIndex={place.sheet ? -1 : undefined}
+              className={place.sheet ? 'queue-menu sheet' : 'queue-menu'}
+              style={
+                place.sheet
+                  ? undefined
+                  : { top: place.top, right: place.right, maxHeight: place.maxHeight }
+              }
+            >
+              <header className="queue-menu-head">
+                <nav className="segmented" aria-label="Filter issues">
+                  {FILTERS.map((entry) => (
+                    <button
+                      key={entry.key}
+                      type="button"
+                      className={filter === entry.key ? 'segment active' : 'segment'}
+                      onClick={() => onFilter(entry.key)}
+                    >
+                      {entry.label} <span className="segment-count tnum">{counts[entry.key]}</span>
+                    </button>
+                  ))}
+                </nav>
+                <button className="icon-button" type="button" aria-label="Close" onClick={onClose}>
+                  <Icon name="x" />
+                </button>
+              </header>
+
+              <div className="queue-menu-body" role="listbox" aria-label="Issues">
+                {groups.map((group) => (
+                  <section key={group.key} className="issue-group">
+                    <div className="issue-group-head">
+                      <span className="issue-group-label">{group.label}</span>
+                      {group.sub && <span className="issue-group-sub">{group.sub}</span>}
+                      <span className="issue-group-count tnum">{group.issues.length}</span>
+                    </div>
+
+                    {group.issues.map((issue) => {
+                      const tag = rowTag(issue);
+                      return (
+                        <button
+                          key={issue.id}
+                          type="button"
+                          role="option"
+                          aria-selected={issue.id === selectedId}
+                          className={issue.id === selectedId ? 'issue-row selected' : 'issue-row'}
+                          onClick={() => onSelect(issue.id)}
+                        >
+                          <span className="issue-row-top">
+                            <span className={`sev sev-${issue.severity}`} />
+                            <span className="issue-ref">{issue.ref}</span>
+                            {tag && <span className={tag.className}>{tag.label}</span>}
+                            {issue.sentAt && <span className="chip">sent</span>}
+                          </span>
+                          <span className="issue-row-statement">{issue.statement}</span>
+                          <span className="issue-row-foot">
+                            {issue.location && <code>{issue.location}</code>}
+                            {issue.raisedBy.length > 1 && <span className="corroborated">corroborated</span>}
+                          </span>
+                        </button>
+                      );
+                    })}
+
+                    {group.key !== selfId && group.key !== 'unassigned' && group.person && filter !== 'resolved' && (
+                      <div className="issue-group-action">
+                        <button
+                          className="button small"
+                          type="button"
+                          onClick={() =>
+                            copy(`letter-${group.key}`, composeLetter(group.person!, reviewName, group.issues))
+                          }
+                        >
+                          <Icon name="copy" />{' '}
+                          {copyLabel(
+                            `letter-${group.key}`,
+                            `Compose ${group.issues.length} into one letter`,
+                            'Letter copied',
+                          )}
+                        </button>
+                      </div>
+                    )}
+                  </section>
+                ))}
+
+                {groups.length === 0 && <p className="empty-note">Nothing under this filter.</p>}
               </div>
-
-              {group.issues.map((issue) => {
-                const tag = rowTag(issue);
-                return (
-                  <button
-                    key={issue.id}
-                    type="button"
-                    role="option"
-                    aria-selected={issue.id === selectedId}
-                    className={issue.id === selectedId ? 'issue-row selected' : 'issue-row'}
-                    onClick={() => onSelect(issue.id)}
-                  >
-                    <span className="issue-row-top">
-                      <span className={`sev sev-${issue.severity}`} />
-                      <span className="issue-ref">{issue.ref}</span>
-                      {tag && <span className={tag.className}>{tag.label}</span>}
-                      {issue.sentAt && <span className="chip">sent</span>}
-                    </span>
-                    <span className="issue-row-statement">{issue.statement}</span>
-                    <span className="issue-row-foot">
-                      {issue.location && <code>{issue.location}</code>}
-                      {issue.raisedBy.length > 1 && <span className="corroborated">corroborated</span>}
-                    </span>
-                  </button>
-                );
-              })}
-
-              {group.key !== selfId && group.key !== 'unassigned' && group.person && filter !== 'resolved' && (
-                <div className="issue-group-action">
-                  <button
-                    className="button small"
-                    type="button"
-                    onClick={() => copy(`letter-${group.key}`, composeLetter(group.person!, reviewName, group.issues))}
-                  >
-                    <Icon name="copy" />{' '}
-                    {copyLabel(`letter-${group.key}`, `Compose ${group.issues.length} into one letter`, 'Letter copied')}
-                  </button>
-                </div>
-              )}
-            </section>
-          ))}
-
-          {groups.length === 0 && <p className="empty-note">Nothing under this filter.</p>}
-        </div>
-      </div>
+            </div>
+            </MaybeSheetChrome>
+          </>,
+          document.body,
+        )}
     </>
   );
 }
