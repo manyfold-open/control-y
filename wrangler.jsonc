@@ -25,6 +25,12 @@
   "observability": {
     "enabled": true
   },
+  // Every minute: advance any running pass (src/worker/panel.ts `advancePasses`).
+  // The review page does the same while it is open; this is what finishes a pass
+  // after the tab is closed. Idle cost is one D1 query per minute.
+  "triggers": {
+    "crons": ["* * * * *"]
+  },
   "upload_source_maps": true,
   "assets": {
     "directory": "./dist/client",

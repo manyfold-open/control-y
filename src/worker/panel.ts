@@ -6,10 +6,12 @@
  * reading cannot colour another's. Then the consolidator receives all of their
  * findings at once and returns the merged, assigned, drafted issue list.
  *
- * The run happens under waitUntil, not in the request: a pass takes minutes and
- * the browser polls the review while it runs. Everything that can fail before
- * the first agent call is checked in `startPass`, so the button gets a real
- * error instead of a pass row that dies silently.
+ * A pass is rows in D1, advanced a step at a time by short invocations: the
+ * review page's poll while someone is watching, the minute cron when nobody is.
+ * Turns are sent with message/send and followed with tasks/get, so nothing here
+ * holds a connection while an agent thinks. Everything that can fail before the
+ * first agent call is checked in `startPass`, so the button gets a real error
+ * instead of a pass row that dies silently.
  *
  * Model output is untrusted. `parsePayload` never throws, every field is
  * validated against the roster and the enums, and an issue the consolidator
@@ -22,16 +24,41 @@ import type {
   IssueFlag,
   IssueStatus,
   MemoryKind,
+  PanelAgent,
   Pass,
   PassAgentResult,
-  PassEvent,
   RetrospectiveLesson,
+  ReviewSummary,
   Severity,
 } from '../shared/types';
 import { evidenceText, readEvidence } from '../shared/evidence';
 import { MEMORY_KINDS } from '../shared/types';
 import { HttpError, type AgentCredential, type Env } from './types';
-import { A2AError, consumeA2AStream, safeErrorText, type ResumeBudget } from './a2a';
+import {
+  A2AError,
+  cancelTask,
+  consumeA2AStream,
+  getTask,
+  safeErrorText,
+  sendTask,
+  type StreamSnapshot,
+} from './a2a';
+import {
+  claimTurn,
+  inFlight,
+  insertTurns,
+  listRunningPasses,
+  listTurns,
+  loadPassContext,
+  markPolled,
+  markSent,
+  savePassContext,
+  setTurnPrompt,
+  settled,
+  settleTurn,
+  type RunningPass,
+  type TurnRow,
+} from './turns';
 import { credentialFor, listConnectedAgents } from './connect';
 import { presignFetch } from './r2';
 import { now } from './db';
@@ -79,22 +106,6 @@ const PROGRESS_NOTE_CHARS = 200;
 const DOC_CHARS_EACH = 24_000;
 const DOC_CHARS_TOTAL = 60_000;
 const MAX_ISSUES_PER_PASS = 200;
-
-/**
- * Extra requests the whole pass may spend chasing turns whose streams broke.
- *
- * A pass is one Worker invocation, and the invocation's subrequest allowance is the
- * scarce resource in it. MEASURED, 6 Sept 2026: two passes running side by side
- * were both refused after about 210 seconds of three reviewers polling every five
- * seconds, which puts the ceiling in the tens of fetches, not the hundreds. Note
- * what was refused — not a reviewer, but the consolidator, the one turn a pass
- * cannot finish without. Both passes wrote nothing.
- *
- * So recovery gets a fixed allowance for the whole run, and the six turns that a
- * pass needs are never inside it. With the backoff in a2a.ts this pays for roughly
- * three reviewers followed for five minutes each, which is the case it exists for.
- */
-const RESUME_BUDGET = 24;
 
 /* ───────── one A2A turn ───────── */
 
@@ -233,7 +244,6 @@ async function ask(
   options: {
     attachments?: Attachment[];
     onProgress?: (update: { state: string; note: string }) => Promise<void> | void;
-    resume?: ResumeBudget;
   } = {},
 ): Promise<string> {
   const { attachments = [], onProgress } = options;
@@ -272,11 +282,6 @@ async function ask(
       },
       signal: controller.signal,
       idleMs: TURN_IDLE_MS,
-      // A pass is the one place with somewhere to put a late answer: the turn has
-      // already been paid for and the pass is going to wait for the other
-      // reviewers regardless, so a lost socket should cost a poll, not the
-      // reviewer. See consumeA2AStream.
-      resume: options.resume,
     });
     const text = snapshot.text.trim();
     if (!text) throw new A2AError(`${cred.label} answered with no text.`, true);
@@ -308,23 +313,6 @@ export function parsePayload<T>(text: string): T | null {
     }
   }
   return null;
-}
-
-async function mapLimit<T, R>(
-  items: T[],
-  limit: number,
-  fn: (item: T) => Promise<R>,
-): Promise<R[]> {
-  const results = new Array<R>(items.length);
-  let next = 0;
-  const worker = async () => {
-    while (next < items.length) {
-      const index = next++;
-      results[index] = await fn(items[index]);
-    }
-  };
-  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
-  return results;
 }
 
 /* ───────── validation of model output ───────── */
@@ -573,30 +561,63 @@ export function consolidateIssues(raw: unknown[], ctx: ConsolidationContext): Is
 
 /* ───────── running a pass ───────── */
 
-/** A claimed pass, and the run that has not started yet. See `startPass`. */
-export interface StartedPass {
-  /** The row as it now stands in D1: claimed, running, nothing done. */
-  pass: Pass;
-  /**
-   * Runs the pass to completion, reporting progress as it goes. Always writes a
-   * terminal row unless the Worker itself is killed, which is what the heartbeat
-   * is for. Call it exactly once, and keep the invocation alive until it settles.
-   */
-  run: (emit: Emit) => Promise<void>;
+/**
+ * A pass is rows, not a stream.
+ *
+ * `startPass` validates, claims the row, writes one turn per enabled reviewer and
+ * one for the consolidator, sends the first reviewers, and returns — in well under
+ * a second. Everything after that happens in `advancePasses`, which any short
+ * invocation may call: the review page's poll does, every few seconds while a pass
+ * is running, and so does the minute cron, so a pass finishes whether or not anyone
+ * is watching it.
+ *
+ * It used to be one invocation that waited, and it died three different ways: the
+ * idle stream to the browser was dropped at 60s, its subrequest allowance ran out
+ * at ~210s, and a closed tab took it with it. Every time, `tasks/list` on the agent
+ * showed the reviewers had finished anyway, with nobody left to collect. This shape
+ * has no connection to lose, spends a handful of subrequests per invocation, and can
+ * cancel a turn that has gone quiet instead of leaving it holding one of the
+ * account's eight delegation slots.
+ */
+
+/** Ask after an in-flight turn no more often than this. A poll is a subrequest. */
+const TURN_POLL_MS = 10_000;
+/** Fetches one advance may make: well under the invocation's allowance, with D1 left over. */
+const ADVANCE_FETCH_BUDGET = 12;
+/**
+ * A running row with no turns belongs to a build that ran passes as one long
+ * invocation. That invocation went with the build, so nothing else will ever settle
+ * the row; after this long, this does.
+ */
+const LEGACY_STALE_MS = 60_000;
+
+/** The fetches one advance has left. Shared by everything it does. */
+interface FetchBudget {
+  remaining: number;
 }
 
-export type Emit = (event: PassEvent) => Promise<void> | void;
+const parseJson = <T>(text: string, fallback: T): T => {
+  try {
+    return JSON.parse(text) as T;
+  } catch {
+    return fallback;
+  }
+};
+
+const resultsOf = (turns: TurnRow[]): PassAgentResult[] =>
+  turns.map((turn) => ({ key: turn.key, name: turn.name, findings: turn.findings, error: turn.error }));
+
+const due = (turn: TurnRow, nowMs: number): boolean =>
+  turn.polled_at === null || nowMs - Date.parse(turn.polled_at) >= TURN_POLL_MS;
 
 /**
- * Validates and claims a pass, and hands back the run without starting it.
+ * Validates and claims a pass, plans its turns, and sends the first reviewers.
  *
- * The split is the point. Everything that can fail before the first agent call
- * fails here, inside the request, so the button gets a real HTTP error. What is
- * left is minutes of agent turns, and the caller — not this module — decides what
- * keeps the Worker alive for them. It must not be `waitUntil`: work that outlives
- * its response gets roughly thirty seconds, and a pass is several times that.
+ * Everything that can fail before an agent is asked anything fails here, as an
+ * HTTP error the button can show. What comes back is the pass as it now stands:
+ * running, with each reviewer either sent or waiting its turn.
  */
-export async function startPass(env: Env, reviewId: string): Promise<StartedPass> {
+export async function startPass(env: Env, reviewId: string): Promise<Pass> {
   const review = await getReviewSummary(env, reviewId);
   if (review.running) {
     throw new HttpError(409, 'pass_running', 'A pass is already running on this review.');
@@ -633,9 +654,9 @@ export async function startPass(env: Env, reviewId: string): Promise<StartedPass
     );
   }
 
-  // Resolves the credential — a missing or unusable agent must fail the button,
-  // not the background run. Per-reviewer pins are resolved inside the run, where
-  // one broken pin costs that reviewer rather than the whole pass.
+  // A missing or unusable agent must fail the button, not the run. Per-reviewer
+  // pins are resolved when each turn is sent, where one broken pin costs that
+  // reviewer rather than the whole pass.
   await credentialResolver(env);
 
   const history = await listPasses(env, reviewId);
@@ -656,74 +677,44 @@ export async function startPass(env: Env, reviewId: string): Promise<StartedPass
     throw new HttpError(409, 'pass_running', 'A pass is already running on this review.');
   }
 
-  const pass: Pass = {
-    id,
-    number,
-    status: 'running',
-    openCount: null,
-    error: null,
-    agents: enabled.map((agent) => ({ key: agent.key, name: agent.name, findings: null, error: null })),
-    memoryEffects: 0,
-    startedAt,
-    finishedAt: null,
-  };
+  try {
+    await planPass(env, { id, reviewId, review, documents, enabled, startedAt });
+  } catch (error) {
+    // The row is claimed, so it has to be settled here or it blocks the review.
+    const message = safeErrorText(error instanceof Error ? error.message : error);
+    await finish(env, id, 'failed', null, message, []);
+    throw error instanceof HttpError ? error : new HttpError(502, 'pass_failed', message);
+  }
 
-  return {
-    pass,
-    run: async (emit) => {
-      // Beats for as long as the run does. If the Worker dies mid-pass the beats
-      // stop with it, and `reapStaleRuns` fails the row a minute later — without
-      // this the row would stay running and block the review for good.
-      const stopBeating = beat(env, id);
-      try {
-        await runPass(env, { passId: id, reviewId }, emit);
-      } catch (error) {
-        const message = safeErrorText(error instanceof Error ? error.message : error);
-        await finish(env, id, 'failed', null, message, []);
-        await emit({ type: 'error', message });
-      } finally {
-        stopBeating();
-      }
-    },
-  };
+  const pass = (await listPasses(env, reviewId)).find((candidate) => candidate.id === id);
+  if (!pass) throw new HttpError(500, 'internal', 'The pass was started but could not be read back.');
+  return pass;
 }
 
-async function finish(
+/**
+ * Writes the turns and sends the first reviewers. The context every prompt is built
+ * from is written down too, so the consolidator's prompt, written minutes from now,
+ * reads from the same facts the reviewers did.
+ */
+async function planPass(
   env: Env,
-  passId: string,
-  status: 'done' | 'failed',
-  openCount: number | null,
-  error: string | null,
-  agents: PassAgentResult[],
-  memoryEffects = 0,
+  options: {
+    id: string;
+    reviewId: string;
+    review: ReviewSummary;
+    documents: PanelDocument[];
+    enabled: PanelAgent[];
+    startedAt: string;
+  },
 ): Promise<void> {
-  await env.DB.prepare(
-    'UPDATE passes SET status = ?, open_count = ?, error = ?, detail = ?, finished_at = ? WHERE id = ?',
-  )
-    .bind(status, openCount, error, JSON.stringify({ agents, memoryEffects }), now(), passId)
-    .run();
-}
+  const { id, reviewId, review, documents, enabled } = options;
+  const [consolidator, memory, issues, feedback] = await Promise.all([
+    getConsolidator(env),
+    listScopedMemory(env, reviewId),
+    listIssues(env, reviewId),
+    listPendingFeedback(env, reviewId),
+  ]);
 
-async function runPass(
-  env: Env,
-  options: { passId: string; reviewId: string },
-  emit: Emit,
-): Promise<void> {
-  const { passId, reviewId } = options;
-  const credentialOf = await credentialResolver(env);
-  const [review, documents, agents, consolidator, roster, memory, issues, feedback] =
-    await Promise.all([
-      getReviewSummary(env, reviewId),
-      readDocuments(env, reviewId),
-      listPanelAgents(env),
-      getConsolidator(env),
-      listRoster(env, reviewId),
-      listScopedMemory(env, reviewId),
-      listIssues(env, reviewId),
-      listPendingFeedback(env, reviewId),
-    ]);
-
-  const enabled = agents.filter((agent) => agent.enabled);
   const applied = memory.filter((entry) => entry.enabled && entry.inScope);
   const carriedIn = issues.filter((issue) => issue.status === 'open');
   const acceptedLinks = feedback.flatMap((batch) =>
@@ -762,88 +753,379 @@ async function runPass(
       : '',
   };
 
-  await emit({ type: 'stage', stage: 'reviewers', done: 0, total: enabled.length });
-  let answered = 0;
-  // One allowance, drawn on by every turn below, reviewers and consolidator alike.
-  const resume: ResumeBudget = { remaining: RESUME_BUDGET };
+  await savePassContext(env, id, ctx);
+  await insertTurns(env, [
+    ...enabled.map((agent) => ({
+      pass_id: id,
+      review_id: reviewId,
+      key: agent.key,
+      name: agent.name,
+      role: 'reviewer' as const,
+      agent_id: agent.agentId,
+      prompt: buildAgentPrompt(agent.prompt, ctx),
+      attachments,
+      state: 'queued',
+    })),
+    {
+      pass_id: id,
+      review_id: reviewId,
+      key: consolidator.key,
+      name: consolidator.name,
+      role: 'consolidator' as const,
+      agent_id: consolidator.agentId,
+      // Written when the reviewers are in: it is made of what they found.
+      prompt: '',
+      attachments: [],
+      state: 'waiting',
+    },
+  ]);
 
-  const results = await mapLimit(enabled, AGENT_CONCURRENCY, async (agent) => {
-    // Reported the moment the agent lands, whichever way it went: a reviewer that
-    // found nothing and one that could not be reached are both results, and the
-    // wait is long enough that the difference is worth showing while it runs.
-    const report = async (result: PassAgentResult) => {
-      answered += 1;
-      await emit({ type: 'agent', ...result });
-      await emit({ type: 'stage', stage: 'reviewers', done: answered, total: enabled.length });
-      return result;
-    };
-    const progress = (state: string, note = '') =>
-      emit({ type: 'progress', key: agent.key, name: agent.name, state, note });
+  await advancePass(env, { id, review_id: reviewId, started_at: options.startedAt });
+}
+
+async function finish(
+  env: Env,
+  passId: string,
+  status: 'done' | 'failed',
+  openCount: number | null,
+  error: string | null,
+  agents: PassAgentResult[],
+  memoryEffects = 0,
+): Promise<void> {
+  await env.DB.batch([
+    env.DB.prepare(
+      'UPDATE passes SET status = ?, open_count = ?, error = ?, detail = ?, finished_at = ? WHERE id = ?',
+    ).bind(status, openCount, error, JSON.stringify({ agents, memoryEffects }), now(), passId),
+    env.DB.prepare('DELETE FROM pass_contexts WHERE pass_id = ?').bind(passId),
+  ]);
+}
+
+/**
+ * Moves every running pass along by one step. Safe to call from anywhere, as often
+ * as you like: it asks after a turn no more than once per TURN_POLL_MS, spends at
+ * most ADVANCE_FETCH_BUDGET fetches, and every transition that must happen exactly
+ * once is a conditional write.
+ */
+export async function advancePasses(env: Env): Promise<void> {
+  for (const pass of await listRunningPasses(env)) {
     try {
-      const cred = await credentialOf(agent);
-      // Said before the turn opens, rather than by it. Concurrency is capped, so an
-      // agent that has not been asked yet is queued rather than slow, and only this
-      // tells the two apart on screen.
-      await progress('submitted');
-      const reply = await ask(cred, buildAgentPrompt(agent.prompt, ctx), {
-        attachments,
-        onProgress: (update) => progress(update.state, update.note),
-        resume,
-      });
-      const payload = parsePayload<{ findings?: unknown }>(reply);
-      const raw = Array.isArray(payload?.findings) ? payload.findings : null;
-      if (!raw) {
-        // Carry an excerpt of what it actually said. An agent that answers in
-        // prose is usually explaining itself — that it could not read a document,
-        // or is refusing — and discarding that left the pass strip saying only
-        // "did not answer", which is the least useful true thing to report.
-        const excerpt = safeErrorText(reply).replace(/\s+/g, ' ').trim().slice(0, 240);
-        return {
-          agent,
-          findings: [] as Record<string, unknown>[],
-          result: await report({
-            key: agent.key,
-            name: agent.name,
-            findings: null,
-            error: excerpt ? `Reply was not the expected JSON. It said: "${excerpt}"` : 'Reply was not the expected JSON.',
-          }),
-        };
-      }
-      const findings = raw.slice(0, 60).filter((f): f is Record<string, unknown> => !!f && typeof f === 'object');
-      return {
-        agent,
-        findings,
-        result: await report({ key: agent.key, name: agent.name, findings: findings.length, error: null }),
-      };
+      await advancePass(env, pass);
     } catch (error) {
-      return {
-        agent,
-        findings: [] as Record<string, unknown>[],
-        result: await report({
-          key: agent.key,
-          name: agent.name,
-          findings: null,
-          error: safeErrorText(error instanceof Error ? error.message : error),
-        }),
-      };
+      // One pass's trouble must not stop the read that triggered this, nor the
+      // other passes. The next advance will try again.
+      console.error('advance', safeErrorText(error instanceof Error ? error.message : error));
     }
-  });
+  }
+}
 
-  const agentResults = results.map((entry) => entry.result);
-  if (agentResults.every((result) => result.findings === null)) {
-    const first = agentResults.find((result) => result.error)?.error ?? 'No agent returned findings.';
-    const message = `Every agent failed. ${first}`;
-    await finish(env, passId, 'failed', null, message, agentResults);
-    await emit({ type: 'error', message });
+async function advancePass(env: Env, pass: RunningPass): Promise<void> {
+  let turns = await listTurns(env, pass.id);
+  if (turns.length === 0 || !turns.some((turn) => turn.role === 'consolidator')) {
+    if (Date.now() - Date.parse(pass.started_at) > LEGACY_STALE_MS) {
+      await finish(
+        env,
+        pass.id,
+        'failed',
+        null,
+        'The pass stopped before it finished, so nothing was written. Run it again.',
+        [],
+      );
+    }
     return;
   }
 
-  const findingsBlock =
-    results
-      .filter((entry) => entry.result.findings !== null)
-      .map((entry) => {
-        if (entry.findings.length === 0) return `### ${entry.agent.name}\nNothing found.`;
-        const lines = entry.findings.map((finding, index) => {
+  let credentialOf: CredentialFor;
+  try {
+    credentialOf = await credentialResolver(env);
+  } catch (error) {
+    const message = safeErrorText(error instanceof Error ? error.message : error);
+    await finish(env, pass.id, 'failed', null, message, resultsOf(turns.filter((t) => t.role === 'reviewer')));
+    return;
+  }
+
+  const budget: FetchBudget = { remaining: ADVANCE_FETCH_BUDGET };
+  const nowMs = Date.now();
+
+  // 0. A consolidator that landed a while ago on a pass still marked running means
+  // the advance that settled it died before it could finish the pass. Finish it now
+  // — after a pause long enough that a live `completePass` is not still at work.
+  const landed = turns.find((turn) => turn.role === 'consolidator' && settled(turn));
+  if (landed && nowMs - Date.parse(landed.finished_at!) > LEGACY_STALE_MS) {
+    const reviewers = turns.filter((turn) => turn.role === 'reviewer');
+    await completePass(env, pass, { settled: true, reply: landed.reply, error: landed.error }, resultsOf(reviewers));
+    return;
+  }
+
+  // 1. Follow what is in flight. Whoever settles the consolidator finishes the pass.
+  for (const turn of turns) {
+    if (!inFlight(turn) || !due(turn, nowMs) || budget.remaining <= 0) continue;
+    const outcome = await followTurn(env, turn, pass, credentialOf, budget);
+    if (turn.role === 'consolidator' && outcome.settled) {
+      const reviewers = (await listTurns(env, pass.id)).filter((t) => t.role === 'reviewer');
+      await completePass(env, pass, outcome, resultsOf(reviewers));
+      return;
+    }
+  }
+
+  turns = await listTurns(env, pass.id);
+  const reviewers = turns.filter((turn) => turn.role === 'reviewer');
+  const consolidator = turns.find((turn) => turn.role === 'consolidator')!;
+
+  // 2. Send reviewers that are still waiting for room. AGENT_CONCURRENCY is how
+  // many the pass has out at once; the account's delegation cap is shared with
+  // everything else the team runs, so a refused send is left queued and simply
+  // sent again next time, with the same messageId.
+  let room = AGENT_CONCURRENCY - reviewers.filter(inFlight).length;
+  for (const turn of reviewers) {
+    if (turn.state !== 'queued' || settled(turn)) continue;
+    if (nowMs - Date.parse(pass.started_at) > TURN_TIMEOUT_MS) {
+      await settleTurn(env, turn.id, {
+        state: 'failed',
+        reply: null,
+        findings: null,
+        error: `Could not be sent. ${turn.error ?? 'The agent kept refusing the turn.'}`,
+      });
+      continue;
+    }
+    if (room <= 0 || budget.remaining <= 0) break;
+    if ((await sendTurn(env, turn, credentialOf, budget)).accepted) room -= 1;
+  }
+
+  turns = await listTurns(env, pass.id);
+  const reviewersNow = turns.filter((turn) => turn.role === 'reviewer');
+  if (!reviewersNow.every(settled)) return;
+
+  // 3. The reviewers are in. Either nobody answered, or it is the consolidator's turn.
+  const agentResults = resultsOf(reviewersNow);
+  if (agentResults.every((result) => result.findings === null)) {
+    const first = agentResults.find((result) => result.error)?.error ?? 'No agent returned findings.';
+    await finish(env, pass.id, 'failed', null, `Every agent failed. ${first}`, agentResults);
+    return;
+  }
+
+  if (consolidator.state === 'waiting') {
+    if (budget.remaining <= 0) return;
+    // Exactly one advance writes the consolidator's prompt and sends it.
+    if (!(await claimTurn(env, consolidator.id, 'waiting', 'queued'))) return;
+    const prompt = await consolidatorPromptFor(env, pass, reviewersNow);
+    if (!prompt) {
+      await finish(env, pass.id, 'failed', null, 'The pass lost the context it was built with. Run it again.', agentResults);
+      return;
+    }
+    await setTurnPrompt(env, consolidator.id, prompt);
+    const sent = await sendTurn(env, { ...consolidator, state: 'queued', prompt }, credentialOf, budget);
+    // An agent that answers in the same breath has settled the turn already, and
+    // no later follow will see it in flight — so the pass is finished here.
+    if (sent.outcome?.settled) await completePass(env, pass, sent.outcome, agentResults);
+    return;
+  }
+  if (consolidator.state === 'queued' && !settled(consolidator) && budget.remaining > 0) {
+    // Its send was refused last time. Same messageId, so this is not a second turn.
+    const sent = await sendTurn(env, consolidator, credentialOf, budget);
+    if (sent.outcome?.settled) await completePass(env, pass, sent.outcome, agentResults);
+  }
+}
+
+/** How one turn landed, for the caller that has to act on it. */
+interface TurnOutcome {
+  /** True only for the call that ended the turn. */
+  settled: boolean;
+  reply: string | null;
+  error: string | null;
+}
+
+/** What a send did: whether the agent took the turn, and how it landed if it landed at once. */
+interface SendResult {
+  accepted: boolean;
+  outcome: TurnOutcome | null;
+}
+
+/**
+ * Sends one turn. `accepted` when the agent took it (or answered it outright, in
+ * which case `outcome` says how).
+ *
+ * A refusal the agent calls transient — the delegation cap, most often — leaves the
+ * turn queued with the reason on it; the next advance sends it again, and because
+ * the messageId is the same the agent will not start a second turn if the first
+ * did in fact begin. Anything the agent calls permanent fails the turn.
+ */
+async function sendTurn(
+  env: Env,
+  turn: TurnRow,
+  credentialOf: CredentialFor,
+  budget: FetchBudget,
+): Promise<SendResult> {
+  const refused: SendResult = { accepted: false, outcome: null };
+  let cred: AgentCredential;
+  try {
+    cred = await credentialOf({ name: turn.name, agentId: turn.agent_id });
+  } catch (error) {
+    await settleTurn(env, turn.id, {
+      state: 'failed',
+      reply: null,
+      findings: null,
+      error: safeErrorText(error instanceof Error ? error.message : error),
+    });
+    return refused;
+  }
+
+  budget.remaining -= 1;
+  const attachments = parseJson<Attachment[]>(turn.attachments, []);
+  try {
+    const snapshot = await sendTask(cred, {
+      kind: 'message',
+      role: 'user',
+      messageId: turn.message_id,
+      parts: [
+        { kind: 'text', text: turn.prompt },
+        ...attachments.map((attachment) => ({
+          kind: 'file',
+          file: { uri: attachment.uri, mimeType: attachment.mediaType, name: attachment.name },
+        })),
+      ],
+    });
+    if (snapshot.terminal) {
+      // Answered in the same breath: a fast agent, or one that blocks regardless.
+      await markSent(env, turn.id, { taskId: snapshot.taskId, state: snapshot.state, agentId: turn.agent_id });
+      return { accepted: true, outcome: await settleFromSnapshot(env, turn, cred, snapshot) };
+    }
+    if (!snapshot.taskId) {
+      await settleTurn(env, turn.id, {
+        state: 'failed',
+        reply: null,
+        findings: null,
+        error: `${cred.label} accepted the turn without returning a task to follow.`,
+      });
+      return refused;
+    }
+    await markSent(env, turn.id, {
+      taskId: snapshot.taskId,
+      state: snapshot.state || 'submitted',
+      agentId: turn.agent_id,
+    });
+    return { accepted: true, outcome: null };
+  } catch (error) {
+    const message = safeErrorText(error instanceof Error ? error.message : error);
+    if (error instanceof A2AError && !error.retryable) {
+      await settleTurn(env, turn.id, { state: 'failed', reply: null, findings: null, error: message });
+      return refused;
+    }
+    await markPolled(env, turn.id, { error: message });
+    return refused;
+  }
+}
+
+/**
+ * Asks after one in-flight turn and records the answer. Settles it when the task
+ * has ended, or when it has been out longer than a turn is allowed — in which case
+ * it is cancelled first, so it stops holding a delegation slot.
+ */
+async function followTurn(
+  env: Env,
+  turn: TurnRow,
+  pass: RunningPass,
+  credentialOf: CredentialFor,
+  budget: FetchBudget,
+): Promise<TurnOutcome> {
+  let cred: AgentCredential;
+  try {
+    cred = await credentialOf({ name: turn.name, agentId: turn.agent_id });
+  } catch (error) {
+    const message = safeErrorText(error instanceof Error ? error.message : error);
+    const settledNow = await settleTurn(env, turn.id, { state: 'failed', reply: null, findings: null, error: message });
+    return { settled: settledNow, reply: null, error: message };
+  }
+
+  budget.remaining -= 1;
+  let snapshot: StreamSnapshot;
+  try {
+    snapshot = await getTask(cred, turn.task_id!);
+  } catch (error) {
+    const message = safeErrorText(error instanceof Error ? error.message : error);
+    if (error instanceof A2AError && !error.retryable) {
+      const settledNow = await settleTurn(env, turn.id, { state: 'failed', reply: null, findings: null, error: message });
+      return { settled: settledNow, reply: null, error: message };
+    }
+    // Could not ask this time. The task is still there; ask again next time.
+    await markPolled(env, turn.id, { error: message });
+    return { settled: false, reply: null, error: null };
+  }
+
+  if (!snapshot.terminal) {
+    if (Date.now() - Date.parse(turn.sent_at ?? pass.started_at) > TURN_TIMEOUT_MS) {
+      if (budget.remaining > 0) {
+        budget.remaining -= 1;
+        await cancelTask(cred, turn.task_id!);
+      }
+      const error = `${cred.label} did not answer within ${Math.round(TURN_TIMEOUT_MS / 60_000)} minutes.`;
+      const settledNow = await settleTurn(env, turn.id, { state: 'canceled', reply: null, findings: null, error });
+      return { settled: settledNow, reply: null, error };
+    }
+    await markPolled(env, turn.id, {
+      state: snapshot.state || undefined,
+      note: safeErrorText(snapshot.progressText).slice(0, PROGRESS_NOTE_CHARS),
+      error: null,
+    });
+    return { settled: false, reply: null, error: null };
+  }
+  return settleFromSnapshot(env, turn, cred, snapshot);
+}
+
+/** Ends a turn from a terminal task, reading the reply the way the pass needs it. */
+async function settleFromSnapshot(
+  env: Env,
+  turn: TurnRow,
+  cred: AgentCredential,
+  snapshot: StreamSnapshot,
+): Promise<TurnOutcome> {
+  const text = snapshot.text.trim();
+  const end = async (fields: { state: string; reply: string | null; findings: number | null; error: string | null }) => ({
+    settled: await settleTurn(env, turn.id, fields),
+    reply: fields.reply,
+    error: fields.error,
+  });
+
+  if (snapshot.state !== 'completed') {
+    const said = text ? ` It said: "${safeErrorText(text).slice(0, 240)}"` : '';
+    return end({ state: snapshot.state, reply: text || null, findings: null, error: `${cred.label} stopped at "${snapshot.state}".${said}` });
+  }
+  if (!text) {
+    return end({ state: 'completed', reply: null, findings: null, error: `${cred.label} answered with no text.` });
+  }
+  if (turn.role !== 'reviewer') {
+    return end({ state: 'completed', reply: text, findings: null, error: null });
+  }
+
+  const payload = parsePayload<{ findings?: unknown }>(text);
+  const raw = Array.isArray(payload?.findings) ? payload.findings : null;
+  if (!raw) {
+    // Carry an excerpt of what it actually said. An agent that answers in prose is
+    // usually explaining itself — that it could not read a document, or is
+    // refusing — and "did not answer" is the least useful true thing to report.
+    const excerpt = safeErrorText(text).replace(/\s+/g, ' ').trim().slice(0, 240);
+    return end({
+      state: 'completed',
+      reply: text,
+      findings: null,
+      error: excerpt ? `Reply was not the expected JSON. It said: "${excerpt}"` : 'Reply was not the expected JSON.',
+    });
+  }
+  const findings = raw.slice(0, 60).filter((f) => !!f && typeof f === 'object').length;
+  return end({ state: 'completed', reply: text, findings, error: null });
+}
+
+/** The reviewers' findings, as the consolidator is shown them. */
+function findingsBlockOf(reviewers: TurnRow[]): string {
+  return (
+    reviewers
+      .filter((turn) => turn.findings !== null)
+      .map((turn) => {
+        const payload = parsePayload<{ findings?: unknown }>(turn.reply ?? '');
+        const findings = (Array.isArray(payload?.findings) ? payload.findings : [])
+          .slice(0, 60)
+          .filter((f): f is Record<string, unknown> => !!f && typeof f === 'object');
+        if (findings.length === 0) return `### ${turn.name}\nNothing found.`;
+        const lines = findings.map((finding, index) => {
           const evidence = readEvidence(finding.evidence);
           return [
             `${index + 1}. [${text(finding.severity, 20) || 'question'}] ${text(finding.location, 160)}`,
@@ -854,42 +1136,63 @@ async function runPass(
             .filter(Boolean)
             .join('\n');
         });
-        return `### ${entry.agent.name}\n${lines.join('\n')}`;
+        return `### ${turn.name}\n${lines.join('\n')}`;
       })
-      .join('\n\n') || 'No agent reported anything.';
+      .join('\n\n') || 'No agent reported anything.'
+  );
+}
 
+async function consolidatorPromptFor(env: Env, pass: RunningPass, reviewers: TurnRow[]): Promise<string | null> {
+  const ctx = await loadPassContext<PassContext>(env, pass.id);
+  if (!ctx) return null;
+  const [consolidator, roster] = await Promise.all([getConsolidator(env), listRoster(env, pass.review_id)]);
   const rosterBlock = bullet(
     roster.map(
       (person) =>
         `${person.id} · ${person.name}${person.isSelf ? ' (the fund manager, who signs in)' : ''}, ${person.org || 'no organisation'} · title on this review: ${person.reviewTitle || 'none recorded'} · directory role: ${person.role || 'none'}`,
     ),
   );
+  return buildConsolidatorPrompt(consolidator.prompt, ctx, rosterBlock, findingsBlockOf(reviewers));
+}
 
-  await emit({ type: 'stage', stage: 'consolidator', done: 0, total: 1 });
-
-  // From here on, a failure is reported with `agentResults` rather than thrown.
-  // Everything above it is the reviewers' work, and it exists nowhere but this
-  // variable until the row is written: a consolidator that cannot be reached used
-  // to take five reviewers' results down with it, leaving a pass row that said
-  // only that something went wrong and a strip that named nobody.
+/**
+ * The consolidator has landed: turn its issue list into rows and close the pass.
+ * Everything that can go wrong here is reported with the reviewers' results
+ * attached, because what the panel found is worth showing even on a pass that
+ * could not be finished.
+ */
+async function completePass(
+  env: Env,
+  pass: RunningPass,
+  outcome: TurnOutcome,
+  agentResults: PassAgentResult[],
+): Promise<void> {
+  const { id: passId, review_id: reviewId } = pass;
   try {
-    const consolidatorCred = await credentialOf(consolidator);
-    const consolidatorProgress = (state: string, note = '') =>
-      emit({ type: 'progress', key: consolidator.key, name: consolidator.name, state, note });
-    await consolidatorProgress('submitted');
-    const reply = await ask(
-      consolidatorCred,
-      buildConsolidatorPrompt(consolidator.prompt, ctx, rosterBlock, findingsBlock),
-      { onProgress: (update) => consolidatorProgress(update.state, update.note), resume },
-    );
-    const payload = parsePayload<{ issues?: unknown }>(reply);
+    if (outcome.error || !outcome.reply) {
+      await finish(env, passId, 'failed', null, outcome.error ?? 'The consolidator answered with no text.', agentResults);
+      return;
+    }
+    const payload = parsePayload<{ issues?: unknown }>(outcome.reply);
     if (!Array.isArray(payload?.issues)) {
-      const message = 'The consolidator did not return an issue list. No issue was changed.';
-      await finish(env, passId, 'failed', null, message, agentResults);
-      await emit({ type: 'error', message });
+      await finish(
+        env,
+        passId,
+        'failed',
+        null,
+        'The consolidator did not return an issue list. No issue was changed.',
+        agentResults,
+      );
       return;
     }
 
+    const [issues, roster, memory, agents, feedback] = await Promise.all([
+      listIssues(env, reviewId),
+      listRoster(env, reviewId),
+      listScopedMemory(env, reviewId),
+      listPanelAgents(env),
+      listPendingFeedback(env, reviewId),
+    ]);
     const writes = consolidateIssues(payload.issues, {
       existing: issues,
       personIds: roster.map((person) => person.id),
@@ -952,11 +1255,9 @@ async function runPass(
       agentResults,
       writes.filter((issue) => issue.memory).length,
     );
-    await emit({ type: 'done', openCount: open?.n ?? 0 });
   } catch (error) {
     const message = safeErrorText(error instanceof Error ? error.message : error);
     await finish(env, passId, 'failed', null, message, agentResults);
-    await emit({ type: 'error', message });
   }
 }
 

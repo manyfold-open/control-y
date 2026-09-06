@@ -9,11 +9,10 @@
  */
 
 import { Hono } from 'hono';
-import type { MemoryKind, PassEvent, Severity, Workspace } from '../shared/types';
+import type { MemoryKind, Severity, Workspace } from '../shared/types';
 import { HttpError, type Env } from './types';
-import { linkFeedback, panelReady, startPass, startRetrospective } from './panel';
+import { advancePasses, linkFeedback, panelReady, startPass, startRetrospective } from './panel';
 import { listConnectedAgents } from './connect';
-import { eventStream, eventStreamHeaders } from './sse';
 import {
   MAX_UPLOAD_BYTES,
   UPLOAD_URL_TTL_SECONDS,
@@ -232,7 +231,15 @@ ctrlY.delete('/panel-agents/:key', async (c) => {
 
 /* ── reviews ── */
 
-ctrlY.get('/reviews/:id', async (c) => c.json(await store.reviewDetail(c.env, c.req.param('id'))));
+/**
+ * Reading a review moves its pass along first. The review page asks for this
+ * every few seconds while a pass is running, so the pass advances at that
+ * cadence with someone watching, and at the cron's without.
+ */
+ctrlY.get('/reviews/:id', async (c) => {
+  await advancePasses(c.env);
+  return c.json(await store.reviewDetail(c.env, c.req.param('id')));
+});
 
 ctrlY.post('/reviews', async (c) => {
   const body = await readBody(c.req);
@@ -397,52 +404,16 @@ ctrlY.put('/reviews/:id/memory/:entryId', async (c) => {
 /* ── the pass ── */
 
 /**
- * Runs a pass, streaming its progress for as long as it takes.
+ * Starts a pass and returns it. The run itself is rows in D1 advanced by short
+ * invocations — see `advancePasses` in panel.ts and the GET above — so nothing
+ * here waits for an agent, and nothing depends on this response staying open.
  *
- * The stream is not a feature, it is the mechanism. A pass is several agent turns
- * end to end — minutes — and a Worker only stays alive for about thirty seconds
- * once its response is finished, so a pass started under waitUntil is killed
- * part-way through every time, leaving a row marked running that no code will ever
- * settle. Holding the response open instead keeps the invocation alive for the
- * whole run, exactly as a chat turn does. CPU is not the constraint here: a pass
- * spends its time waiting on agents, and burns tens of milliseconds doing it.
- *
- * Anything that can fail before the first agent call still fails as an ordinary
- * HTTP error, because `startPass` validates and claims the row before a byte of
- * the stream is written.
- *
- * Because the response is the run's life support, the stream must never look
- * dead — and a pass is mostly silence, since agents do not stream while they
- * think. `eventStream` puts a keep-alive comment on the wire every ten seconds
- * for exactly that reason; without it two passes on this workspace were dropped
- * at 60s having heard from nobody. It also stops waiting for a reader that has
- * gone, so a closed tab delays the run by one event rather than wedging it.
- *
- * If the browser goes away mid-run the run carries on as far as it can: waitUntil
- * holds the invocation, and the outcome belongs on the pass row whether or not
- * anyone is still watching. If the invocation really is killed, the beat stops
- * with it and `reapStaleRuns` fails the row a minute later.
+ * Anything that can fail before an agent is asked anything fails here, as an
+ * ordinary HTTP error: `startPass` validates and claims the row before it sends.
  */
-ctrlY.post('/reviews/:id/passes', async (c) => {
-  const started = await startPass(c.env, c.req.param('id'));
-  const stream = eventStream<PassEvent>(c.req.raw.signal);
-
-  const run = (async () => {
-    try {
-      // Flushed first so intermediaries commit to streaming, and so the browser
-      // has the pass the moment it exists rather than when the run ends.
-      await stream.emit({ type: 'start', pass: started.pass });
-      await started.run(stream.emit);
-    } finally {
-      await stream.close();
-    }
-  })();
-  // Only covers the tail after a disconnect; the open response is what carries the
-  // run itself.
-  c.executionCtx.waitUntil(run);
-
-  return new Response(stream.readable, { headers: eventStreamHeaders });
-});
+ctrlY.post('/reviews/:id/passes', async (c) =>
+  c.json({ pass: await startPass(c.env, c.req.param('id')) }, 201),
+);
 
 /* ── issues ── */
 

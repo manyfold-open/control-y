@@ -39,6 +39,7 @@ import {
 import { getConversation, handleChatTurn, resetConversation } from './chat';
 import { ensureSeed } from './seed';
 import { ctrlY } from './routes';
+import { advancePasses } from './panel';
 
 const SERVICE = 'cloudflare-worker-starter';
 
@@ -184,4 +185,15 @@ app.all('/api/*', () => {
 // Anything else that reaches the Worker is a static asset (or the SPA fallback).
 app.all('*', (c) => c.env.ASSETS.fetch(c.req.raw));
 
-export default app;
+export default {
+  fetch: (request: Request, env: Env, ctx: ExecutionContext) => app.fetch(request, env, ctx),
+  /**
+   * The minute cron (wrangler.jsonc, `triggers.crons`). A running pass is advanced
+   * by whoever reads its review; this is who reads it when nobody is looking, so a
+   * pass finishes with the tab closed. It does one D1 query when nothing is running.
+   */
+  async scheduled(_controller: ScheduledController, env: Env): Promise<void> {
+    await ensureSchema(env.DB);
+    await advancePasses(env);
+  },
+};

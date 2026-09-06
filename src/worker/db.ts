@@ -190,13 +190,53 @@ CREATE TABLE IF NOT EXISTS passes (
   finished_at TEXT
 );
 
--- A liveness beat from a background run: a pass, a close-out, or a pasted reply
--- being read. The run writes here every few seconds; a row still marked running
--- whose beat has stopped is a run whose Worker is gone, which is the one failure
--- no catch block can report. store.ts reaps those. The id is the pass /
--- retrospective / feedback-batch id, and a separate table because there is no
--- migration step — a column added to the passes table would never reach a
--- database an earlier build created.
+-- One agent turn of a pass. A pass sends each turn with message/send and
+-- blocking false, then follows it with tasks/get from later, short invocations
+-- (the review page's poll, the minute cron) rather than holding a stream open.
+-- See turns.ts and panel.ts. message_id is derived from the pass and the key,
+-- so a retried send returns the original task instead of billing a second turn,
+-- and prompt is kept so a retry sends exactly what was meant.
+CREATE TABLE IF NOT EXISTS pass_turns (
+  id          TEXT PRIMARY KEY,
+  pass_id     TEXT NOT NULL,
+  review_id   TEXT NOT NULL,
+  key         TEXT NOT NULL,
+  name        TEXT NOT NULL,
+  role        TEXT NOT NULL,
+  agent_id    TEXT,
+  message_id  TEXT NOT NULL,
+  prompt      TEXT NOT NULL DEFAULT '',
+  attachments TEXT NOT NULL DEFAULT '[]',
+  task_id     TEXT,
+  state       TEXT NOT NULL,
+  note        TEXT NOT NULL DEFAULT '',
+  reply       TEXT,
+  findings    INTEGER,
+  error       TEXT,
+  sent_at     TEXT,
+  polled_at   TEXT,
+  finished_at TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_pass_turns_pass ON pass_turns (pass_id);
+CREATE INDEX IF NOT EXISTS idx_pass_turns_review ON pass_turns (review_id);
+
+-- The facts a pass was built on, kept so the consolidator's prompt is written from
+-- the same header, memory, carried issues and replies the reviewers read, however
+-- long the reviewers took.
+CREATE TABLE IF NOT EXISTS pass_contexts (
+  pass_id TEXT PRIMARY KEY,
+  context TEXT NOT NULL
+);
+
+-- A liveness beat from a background run: a close-out, or a pasted reply being
+-- read. (A pass no longer beats: its turns are rows, and nothing about it lives
+-- longer than one short invocation.) The run writes here every few seconds; a row
+-- still marked running whose beat has stopped is a run whose Worker is gone, which
+-- is the one failure no catch block can report. store.ts reaps those. The id is
+-- the retrospective / feedback-batch id, and a separate table because there is no
+-- migration step — a column added to those tables would never reach a database an
+-- earlier build created.
 --
 -- (No backticks in this string: SCHEMA is a template literal, and a backtick
 --  here terminates it. That is a syntax error in db.ts, not a SQL problem.)

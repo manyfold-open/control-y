@@ -26,7 +26,7 @@ import type {
   Issue,
   MemoryKind,
   Pass,
-  PassEvent,
+  PassAgentResult,
   ReviewDetail,
   RosterEntry,
   ScopedMemoryEntry,
@@ -35,7 +35,6 @@ import type {
 } from '../../shared/types';
 import { composeLetter } from '../../shared/letter';
 import { authHeaders, send } from '../api';
-import { streamPass } from '../sse';
 import {
   errorText,
   formatBytes,
@@ -105,10 +104,9 @@ const countUndecided = (feedback: FeedbackBatch[]): number =>
  * The run as it happens: which reviewers are reading, what each says it is doing,
  * and what it came back with.
  *
- * None of it is persisted, and none of it should be. A pass lives only as long as
- * the connection carrying it — leaving the page stops the run — so there would be
- * nothing to show after a reload, and the pass row, which is the record, already
- * says how it ended.
+ * Read off the running pass itself, which the Worker keeps current as it advances
+ * the turns and this page re-reads every few seconds. Nothing lives in this tab:
+ * reload, or come back later, and the view is exactly where the run is.
  */
 interface LiveAgent {
   name: string;
@@ -131,47 +129,33 @@ interface LiveRun {
   agents: Record<string, LiveAgent>;
 }
 
-const queued = (name: string): LiveAgent => ({
-  name,
-  state: '',
-  note: '',
-  findings: null,
-  error: null,
-  startedAt: null,
-  finishedAt: null,
-});
+/** The panel agent key the seed gives the consolidator. It is never a reviewer. */
+const CONSOLIDATOR_KEY = 'consolidator';
 
-/** Folds one streamed event into the live view. Pure — the caller owns the state. */
-export function applyPassEvent(live: LiveRun | null, event: PassEvent, atMs: number): LiveRun | null {
-  if (event.type === 'start') {
-    return {
-      stage: 'reviewers',
-      done: 0,
-      total: event.pass.agents.length,
-      order: event.pass.agents.map((agent) => agent.key),
-      agents: Object.fromEntries(event.pass.agents.map((agent) => [agent.key, queued(agent.name)])),
-    };
-  }
-  if (!live) return live;
-
-  if (event.type === 'stage') {
-    return { ...live, stage: event.stage, done: event.done, total: event.total };
-  }
-  if (event.type === 'progress' || event.type === 'agent') {
-    // The consolidator is not in the roster the pass started with, so it joins the
-    // order the first time it reports.
-    const known = live.agents[event.key] ?? queued(event.name);
-    const next: LiveAgent =
-      event.type === 'progress'
-        ? { ...known, state: event.state, note: event.note, startedAt: known.startedAt ?? atMs }
-        : { ...known, findings: event.findings, error: event.error, finishedAt: atMs };
-    return {
-      ...live,
-      order: live.order.includes(event.key) ? live.order : [...live.order, event.key],
-      agents: { ...live.agents, [event.key]: next },
-    };
-  }
-  return live;
+/**
+ * The live view, read off the running pass. Pure — the pass row is the state.
+ *
+ * The consolidator is not on the roster the pass starts with: the Worker adds it
+ * to `agents` once the reviewers are in, which is also how the stage is known.
+ */
+export function liveFromPass(pass: Pass): LiveRun {
+  const toLive = (agent: PassAgentResult): LiveAgent => ({
+    name: agent.name,
+    state: agent.state ?? '',
+    note: agent.note ?? '',
+    findings: agent.findings,
+    error: agent.error,
+    startedAt: agent.startedAt ? Date.parse(agent.startedAt) : null,
+    finishedAt: agent.finishedAt ? Date.parse(agent.finishedAt) : null,
+  });
+  const reviewers = pass.agents.filter((agent) => agent.key !== CONSOLIDATOR_KEY);
+  return {
+    stage: pass.agents.some((agent) => agent.key === CONSOLIDATOR_KEY) ? 'consolidator' : 'reviewers',
+    done: reviewers.filter((agent) => agent.findings !== null || agent.error !== null).length,
+    total: reviewers.length,
+    order: pass.agents.map((agent) => agent.key),
+    agents: Object.fromEntries(pass.agents.map((agent) => [agent.key, toLive(agent)])),
+  };
 }
 
 /** What one row says of itself. One label, and only where it earns one. */
@@ -189,11 +173,12 @@ export function liveStatus(agent: LiveAgent): { label: string; className: string
   return { label: 'queued', className: 'nothing' };
 }
 
-function PanelAtWork({ live }: { live: LiveRun }) {
+function PanelAtWork({ pass }: { pass: Pass }) {
   // One tick a second, and only while this is mounted: the elapsed figures are the
   // only thing on the page that moves by itself.
   const [, setTick] = useState(0);
   usePoll(true, 1000, () => setTick((count) => count + 1));
+  const live = liveFromPass(pass);
   const atMs = Date.now();
 
   return (
@@ -246,10 +231,10 @@ export default function ReviewDetailView({
   const [busy, setBusy] = useState(false);
   /** Only the gap between pressing Run and the pass existing; `running` takes over. */
   const [passStarting, setPassStarting] = useState(false);
-  /** The pass as it happens, or null when this tab is not watching one. */
-  const [live, setLive] = useState<LiveRun | null>(null);
   /** Whether the panel disclosure was open before a run forced it open. */
   const wasOpen = useRef(false);
+  /** Whether this tab opened the disclosure for a run it started. */
+  const openedForRun = useRef(false);
   const [actionError, setActionError] = useState('');
   const [copyLabel, copy] = useCopy();
 
@@ -275,6 +260,17 @@ export default function ReviewDetailView({
   );
 
   const running = data?.review.running ?? false;
+  const runningPass = data?.passes.find((pass) => pass.status === 'running') ?? null;
+  // A disclosure opened for a run is put back the way it was found when the run
+  // ends: one the user had closed should not stay open because a pass ran.
+  const wasRunning = useRef(false);
+  useEffect(() => {
+    if (wasRunning.current && !running && openedForRun.current) {
+      openedForRun.current = false;
+      setPassOpen(wasOpen.current);
+    }
+    wasRunning.current = running;
+  }, [running]);
   const linking = data?.feedback.some((batch) => batch.status === 'linking') ?? false;
   const retrospecting = data?.retrospective?.status === 'running';
   usePoll(running || linking || retrospecting, 2500, () => {
@@ -401,62 +397,37 @@ export default function ReviewDetailView({
           : '';
 
   /**
-   * Runs a pass and stays on the line until it ends.
+   * Starts a pass. The run itself is rows in D1 that the Worker advances whenever
+   * this page polls the review, and by cron when it does not — so this waits only
+   * for the pass to exist. Nothing here holds a connection for the minutes the
+   * agents take, and closing the tab no longer stops the run.
    *
-   * The connection is not decoration: the Worker running the pass lives only as
-   * long as this response is open, so leaving the page part-way through stops the
-   * run. It is marked as a failed pass shortly after, and the review stays runnable.
-   *
-   * The stream carries progress, not content — the poll re-reads the review, the
-   * same as after any other write. The first event says the pass exists, which is
-   * what starts that poll; the last says it finished, or says why it did not. What
-   * arrives in between is the panel at work, held in `live` and dropped at the end:
-   * the pass row is the record, and this is only the wait made legible.
-   *
-   * Deliberately not run through `act`: that holds `busy` for the whole call, and a
-   * pass takes minutes. Assigning an issue or copying a letter must stay possible
-   * while the panel is reading. Only the run button waits, and only until the pass
-   * exists — after that `running` disables it.
+   * Deliberately not run through `act`: that holds `busy` for the whole call, and
+   * assigning an issue or copying a letter must stay possible while the panel
+   * reads. Only the run button waits, and only until the pass exists — after that
+   * `running` disables it.
    */
   const runPass = async (): Promise<boolean> => {
     setPassStarting(true);
     setActionError('');
-    let failure = '';
-    /** Takes the live view down and gives the disclosure back as it was found. */
-    const endLive = () => {
-      setLive(null);
-      setPassOpen(wasOpen.current);
-    };
+    // Opened for the run, and put back the way it was found afterwards.
+    wasOpen.current = passOpen;
+    openedForRun.current = true;
+    setPassOpen(true);
+    let started = true;
     try {
-      await streamPass(review.id, (event) => {
-        if (event.type === 'start') {
-          setPassStarting(false);
-          // Opened for the run, and put back the way it was found afterwards: a
-          // disclosure the user closed should not stay open because a pass ran.
-          wasOpen.current = passOpen;
-          setPassOpen(true);
-          void reload(true);
-          void reloadWorkspace(true);
-        }
-        if (event.type === 'error') failure = event.message;
-        // `done` and `error` end the pass by contract, whatever the socket does
-        // next. Taking the live view down when the stream closed instead left a
-        // finished pass on screen still reading, seconds still counting, for as
-        // long as the connection lingered — which was minutes.
-        if (event.type === 'done' || event.type === 'error') endLive();
-        else setLive((current) => applyPassEvent(current, event, Date.now()));
-      });
+      await send('POST', `/api/reviews/${encodeURIComponent(review.id)}/passes`);
     } catch (caught) {
-      failure = errorText(caught);
+      started = false;
+      setActionError(errorText(caught));
+      openedForRun.current = false;
+      setPassOpen(wasOpen.current);
     } finally {
       setPassStarting(false);
-      // A stream that died without a terminal event still has to release the view.
-      endLive();
     }
     await reload(true);
     await reloadWorkspace(true);
-    if (failure) setActionError(failure);
-    return !failure;
+    return started;
   };
 
   return (
@@ -516,9 +487,9 @@ export default function ReviewDetailView({
 
         {blockedReason !== '' && <p className="blocked-note">{blockedReason}</p>}
 
-        {passOpen && live && <PanelAtWork live={live} />}
+        {passOpen && runningPass && <PanelAtWork pass={runningPass} />}
 
-        {passOpen && !live && (
+        {passOpen && !runningPass && (
           <div className="panel-strip">
             {strip ? (
               strip.agents.map((agent) => (

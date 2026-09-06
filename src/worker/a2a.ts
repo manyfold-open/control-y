@@ -189,6 +189,70 @@ export async function describeFromCard(cardUrl: string): Promise<string> {
   }
 }
 
+/* ───────── one request, one answer ───────── */
+
+const RPC_TIMEOUT_MS = 30_000;
+
+/**
+ * One JSON-RPC call with a plain JSON answer. Transport trouble arrives as an HTTP
+ * status and trouble with the call itself as HTTP 200 carrying `error`; both leave
+ * here as an A2AError so a caller sees one kind of failure.
+ */
+export async function rpcCall(cred: AgentCredential, method: string, params: unknown): Promise<unknown> {
+  const response = await fetchTimeout(
+    cred.rpcUrl,
+    {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${cred.token}` },
+      body: rpcBody(method, params),
+      redirect: 'manual',
+    },
+    RPC_TIMEOUT_MS,
+  );
+  if (!response.ok) throw await httpFailure(response, cred.label);
+  const envelope = (await response.json().catch(() => null)) as Record<string, unknown> | null;
+  if (!envelope) throw new A2AError(`${cred.label} answered with something other than JSON.`, true);
+  if (envelope.error) throw jsonRpcError(envelope.error, cred.label);
+  return envelope.result;
+}
+
+/**
+ * Starts a turn and comes straight back. `blocking: false` returns the task the
+ * moment the agent has accepted it, so nothing here holds a connection while the
+ * agent thinks — follow the task with `getTask` from whatever invocation comes
+ * next. The messageId in `message` is the idempotency key: send the same one again
+ * and the agent returns this task rather than starting another, which is what makes
+ * a retry safe to bill.
+ */
+export async function sendTask(
+  cred: AgentCredential,
+  message: Record<string, unknown>,
+): Promise<StreamSnapshot> {
+  const result = await rpcCall(cred, 'message/send', {
+    message,
+    configuration: { blocking: false, acceptedOutputModes: ['text/plain'] },
+  });
+  return foldA2AResults([result]);
+}
+
+/** The task as it stands. Free: no turn runs because of it. */
+export async function getTask(cred: AgentCredential, taskId: string): Promise<StreamSnapshot> {
+  return foldA2AResults([await rpcCall(cred, 'tasks/get', { id: taskId })]);
+}
+
+/**
+ * Best effort. A turn nobody will collect should stop holding one of the account's
+ * few delegation slots; a task that has already ended cannot be cancelled and says
+ * so, which is fine.
+ */
+export async function cancelTask(cred: AgentCredential, taskId: string): Promise<void> {
+  try {
+    await rpcCall(cred, 'tasks/cancel', { id: taskId });
+  } catch {
+    /* over already, or unreachable: either way there is nothing more to do */
+  }
+}
+
 /* ───────── streaming ───────── */
 
 export const TERMINAL_STATES = new Set([

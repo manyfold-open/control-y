@@ -37,6 +37,7 @@ import type {
 import { readEvidence } from '../shared/evidence';
 import { HttpError, type Env } from './types';
 import { now } from './db';
+import { listReviewTurns, type TurnRow } from './turns';
 import { deleteReviewObjects } from './r2';
 
 /* ───────── parsing helpers ───────── */
@@ -1027,16 +1028,10 @@ export function beat(env: Env, id: string): () => void {
 export async function reapStaleRuns(env: Env): Promise<void> {
   const cutoff = new Date(Date.now() - STALE_MS).toISOString();
   const finishedAt = now();
+  // Passes are not reaped here any more: a pass is rows advanced by short
+  // invocations (panel.ts), and nothing about it beats. A row left running by a
+  // build from before that is settled by `advancePasses` instead.
   await env.DB.batch([
-    env.DB.prepare(
-      `UPDATE passes SET status = 'failed', error = ?, finished_at = ?
-        WHERE status = 'running'
-          AND COALESCE((SELECT beat_at FROM run_heartbeats WHERE id = passes.id), started_at) < ?`,
-    ).bind(
-      'The pass stopped before it finished, so nothing was written. Run it again.',
-      finishedAt,
-      cutoff,
-    ),
     env.DB.prepare(
       `UPDATE retrospectives SET status = 'failed', error = ?, finished_at = ?
         WHERE status = 'running'
@@ -1063,14 +1058,50 @@ export async function reapStaleRuns(env: Env): Promise<void> {
 /* ───────── passes ───────── */
 
 export async function listPasses(env: Env, reviewId: string): Promise<Pass[]> {
-  const { results } = await env.DB.prepare(
-    `SELECT id, review_id, number, status, open_count, error, detail, started_at, finished_at
-     FROM passes WHERE review_id = ? ORDER BY number`,
-  )
-    .bind(reviewId)
-    .all<PassRow>();
-  return (results ?? []).map(toPass);
+  const [{ results }, turns] = await Promise.all([
+    env.DB.prepare(
+      `SELECT id, review_id, number, status, open_count, error, detail, started_at, finished_at
+       FROM passes WHERE review_id = ? ORDER BY number`,
+    )
+      .bind(reviewId)
+      .all<PassRow>(),
+    listReviewTurns(env, reviewId),
+  ]);
+  const byPass = new Map<string, TurnRow[]>();
+  for (const turn of turns) {
+    const list = byPass.get(turn.pass_id) ?? [];
+    list.push(turn);
+    byPass.set(turn.pass_id, list);
+  }
+  return (results ?? []).map((row) => {
+    const pass = toPass(row);
+    // A finished pass is its row: `detail` was written when it ended. A running
+    // one is its turns, which is where the panel at work is read from.
+    if (pass.status !== 'running') return pass;
+    const own = byPass.get(row.id) ?? [];
+    if (own.length === 0) return pass;
+    return {
+      ...pass,
+      // The consolidator joins the list once the reviewers are in, the way it used
+      // to join the live view the first time it reported.
+      agents: own.filter((turn) => turn.state !== 'waiting').map(liveResult),
+    };
+  });
 }
+
+/** One turn of a running pass, as the browser is shown it. */
+const liveResult = (turn: TurnRow): PassAgentResult => ({
+  key: turn.key,
+  name: turn.name,
+  findings: turn.findings,
+  error: turn.error,
+  // Before the agent has been asked, it has no state to report; the browser
+  // calls that queued.
+  state: turn.state === 'queued' || turn.state === 'waiting' ? '' : turn.state,
+  note: turn.note,
+  startedAt: turn.sent_at,
+  finishedAt: turn.finished_at,
+});
 
 /** The newest completed pass in the workspace, whichever review it belongs to. */
 export async function latestPass(

@@ -1,17 +1,16 @@
 /**
- * Client side of the two streamed operations: a chat turn, and a pass.
+ * Client side of the one streamed operation: a chat turn.
  *
  * EventSource cannot POST or set headers, so this is a plain fetch whose response
  * body is read as SSE: frames separated by a blank line, JSON payload on `data:`
  * lines. Each parsed event is handed to the caller in order; the promise resolves
  * when the stream closes.
  *
- * For a pass, holding this connection open is what keeps the Worker running it
- * alive — closing the tab part-way stops the run. See the route in
- * src/worker/routes.ts.
+ * A pass is not streamed any more: it is started with one POST and read back with
+ * the review, which the page polls while it runs.
  */
 
-import type { ChatEvent, PassEvent } from '../shared/types';
+import type { ChatEvent } from '../shared/types';
 import { ApiError, authHeaders } from './api';
 import type { ApiErrorBody } from '../shared/types';
 
@@ -21,9 +20,6 @@ export const streamChat = (
   onEvent: (event: ChatEvent) => void,
 ): Promise<void> =>
   streamPost(`/api/agents/${encodeURIComponent(agentId)}/chat`, { message }, onEvent, 'Chat');
-
-export const streamPass = (reviewId: string, onEvent: (event: PassEvent) => void): Promise<void> =>
-  streamPost(`/api/reviews/${encodeURIComponent(reviewId)}/passes`, undefined, onEvent, 'The pass');
 
 async function streamPost<Event>(
   path: string,

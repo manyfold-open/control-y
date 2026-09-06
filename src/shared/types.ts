@@ -233,6 +233,16 @@ export interface PassAgentResult {
   name: string;
   findings: number | null;
   error: string | null;
+  /**
+   * Only while the pass runs: the A2A task state as the agent last reported it,
+   * the agent's own note about what it is doing, and when its turn began and
+   * landed. A finished pass carries none of this — the row is the record, and
+   * this was only the wait made legible.
+   */
+  state?: string;
+  note?: string;
+  startedAt?: string | null;
+  finishedAt?: string | null;
 }
 
 export interface Pass {
@@ -246,29 +256,6 @@ export interface Pass {
   startedAt: string;
   finishedAt: string | null;
 }
-
-/**
- * Events the Worker streams to the browser while a pass runs (SSE `data:` payloads).
- *
- * They carry no issue content: the browser re-reads the review for that, the same
- * way it does after any other write. What the stream is actually for is holding the
- * Worker invocation open for the length of the run — a pass is several agent turns
- * end to end, and work that outlives its own response is cut off long before that.
- * Saying how far along the run is comes free with keeping it alive.
- */
-export type PassEvent =
-  | { type: 'start'; pass: Pass }
-  | { type: 'stage'; stage: 'reviewers' | 'consolidator'; done: number; total: number }
-  /**
-   * One agent's own account of itself, mid-turn: the A2A task state, and whatever
-   * status text it chose to send with it. `key` is the panel agent's key, so the
-   * consolidator reports through this too. Both fields are the agent's words and
-   * not ours — `note` is sanitised and capped before it is sent.
-   */
-  | { type: 'progress'; key: string; name: string; state: string; note: string }
-  | { type: 'agent'; key: string; name: string; findings: number | null; error: string | null }
-  | { type: 'done'; openCount: number | null }
-  | { type: 'error'; message: string };
 
 /**
  * One rule the retrospective proposes carrying into the next review.
