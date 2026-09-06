@@ -85,16 +85,28 @@ interface Attachment {
   name: string;
 }
 
-/** Signed once per pass, not once per reviewer. */
-async function attachmentsFor(env: Env, documents: PanelDocument[]): Promise<Attachment[]> {
+/**
+ * Signed once per pass, not once per reviewer, and returned two ways: as the A2A
+ * file parts, and as a key -> url map for `documentsBlock` to write into the
+ * prompt text. The same URL serves both, so a reviewer sees one link, not two.
+ */
+async function attachmentsFor(
+  env: Env,
+  documents: PanelDocument[],
+): Promise<{ attachments: Attachment[]; urls: Map<string, string> }> {
   const files = documents.filter((document) => document.kind === 'file');
-  return Promise.all(
+  const signed = await Promise.all(
     files.map(async (document) => ({
+      key: document.key,
       uri: await presignFetch(env, document.key),
       mediaType: document.mediaType,
       name: document.name,
     })),
   );
+  return {
+    attachments: signed.map(({ uri, mediaType, name }) => ({ uri, mediaType, name })),
+    urls: new Map(signed.map(({ key, uri }) => [key, uri])),
+  };
 }
 
 /** Resolves the connected Manyfold agent one prompt runs on. */
@@ -264,17 +276,29 @@ const indent = (block: string, by: number): string =>
     .map((line) => `${' '.repeat(by)}${line}`)
     .join('\n');
 
-function documentsBlock(docs: PanelDocument[]): string {
+/**
+ * The documents, as prose in the prompt.
+ *
+ * A file gets its download URL written into the text. The A2A `file` part is
+ * dropped before the model ever sees it, but the text part plainly is not — an
+ * agent quoted our placeholder back at us — so the text is the only channel that
+ * reaches it. An agent that can fetch a URL can now read the document; one that
+ * cannot is told so in the same breath, and told not to report clean over it.
+ *
+ * The URL is a bearer capability, and putting it in the prompt puts it wherever
+ * the agent's transcript goes. It expires in an hour and grants read on one
+ * object, which is the same grant the `file` part carried — only now somewhere
+ * it can actually be used.
+ */
+function documentsBlock(docs: PanelDocument[], urls: Map<string, string>): string {
   let budget = DOC_CHARS_TOTAL;
   return docs
     .map((doc) => {
       if (doc.kind === 'file') {
-        // Says what is true. Claiming the file is "attached" invited the reviewer
-        // to look for content that never arrives, and one duly spent its turn
-        // explaining that it could only see the placeholder. Naming the file and
-        // admitting it is unreadable at least stops a reviewer reporting clean
-        // over a document nobody read.
-        return `### ${doc.name}\n[a ${doc.mediaType} file is held with this review, but its contents are NOT available to you. Do not treat it as reviewed, and say so if a finding would depend on it.]`;
+        const url = urls.get(doc.key);
+        return url
+          ? `### ${doc.name}\nA ${doc.mediaType} file. Its contents are not inlined here — download it yourself:\n${url}\nThe link works for one hour and needs no credentials. If you cannot fetch it, say so and do not report this document as reviewed.`
+          : `### ${doc.name}\n[a ${doc.mediaType} file is held with this review, but its contents are NOT available to you. Do not treat it as reviewed, and say so if a finding would depend on it.]`;
       }
       const room = Math.min(DOC_CHARS_EACH, budget);
       budget -= room;
@@ -600,6 +624,10 @@ async function runPass(
       .map((link) => ({ batch, link, issue: issues.find((i) => i.id === link.issueId) })),
   );
 
+  // Signed before the context is built: the links go into the prompt text, which
+  // is the only channel that reaches the model.
+  const { attachments, urls } = await attachmentsFor(env, documents);
+
   const ctx: PassContext = {
     header: `THE REVIEW\n${review.name} — prepared by ${review.counterparty || 'a third party'} — ${review.period || 'no period stated'}`,
     memory: applied.length
@@ -607,7 +635,7 @@ async function runPass(
           applied.map((entry) => `[${entry.id}] [${entry.kind}] ${entry.text}`),
         )}`
       : '',
-    documents: documentsBlock(documents),
+    documents: documentsBlock(documents, urls),
     carried: carriedIn.length
       ? `ISSUES CARRIED IN FROM THE LAST PASS\n${bullet(
           carriedIn.map(
@@ -625,9 +653,6 @@ async function runPass(
         )}`
       : '',
   };
-
-  // Signed once, before the fan-out, and shared by every reviewer in this pass.
-  const attachments = await attachmentsFor(env, documents);
 
   await emit({ type: 'stage', stage: 'reviewers', done: 0, total: enabled.length });
   let answered = 0;

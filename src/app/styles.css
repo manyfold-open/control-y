@@ -1405,6 +1405,4 @@ input:focus-visible, textarea:focus-visible, select:focus-visible {
   .button { padding: 10px 18px; }
 }
 
-/* The panel cannot read inside an uploaded file yet, and the upload form is the
-   one place that misconception is cheap to correct. */
-.file-preview-warn { color: var(--judgment); font-size: 12px; line-height: 1.5; }
+.file-preview-note { color: var(--stone); font-size: 12px; line-height: 1.5; }
