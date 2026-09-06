@@ -229,6 +229,22 @@ CREATE TABLE IF NOT EXISTS issues (
   updated_at      TEXT NOT NULL
 );
 
+-- What an issue said before the pass that rewrote it. A "revised" chip tells the
+-- reader something changed; this is the only place that can tell them what.
+--
+-- One row per rewrite, not a full history: the reader wants the last version to
+-- compare against, and the passes table already records that a pass happened. A
+-- separate table rather than two more columns on issues, there being no
+-- migration step — same reason as panel_agent_targets above.
+CREATE TABLE IF NOT EXISTS issue_revisions (
+  issue_id    TEXT PRIMARY KEY,
+  pass_id     TEXT,
+  statement   TEXT NOT NULL,
+  severity    TEXT NOT NULL DEFAULT 'question',
+  location    TEXT NOT NULL DEFAULT '',
+  recorded_at TEXT NOT NULL
+);
+
 -- One paste of replies from one recipient, plus the links the panel proposed.
 CREATE TABLE IF NOT EXISTS feedback_batches (
   id             TEXT PRIMARY KEY,

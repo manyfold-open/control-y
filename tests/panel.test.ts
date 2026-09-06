@@ -103,6 +103,7 @@ const carried: Issue = {
   draft: 'Hello Sigrid,\n\nWhat is this?\n\nThank you.',
   resolution: null,
   sentAt: null,
+  previous: null,
 };
 
 const context = {

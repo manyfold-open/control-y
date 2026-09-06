@@ -22,8 +22,10 @@ const SEED_KEY = 'turnzero_seed';
  * INSERT OR IGNORE, so existing rows, including edited prompts, are untouched.
  *
  * 2 — added the retrospective prompt, which getRetrospective() requires.
+ * 3 — added issue_revisions rows, without which the two seeded `revised` issues
+ *     show a chip saying they were rewritten and nothing saying how.
  */
-const SEED_VERSION = '2';
+const SEED_VERSION = '3';
 
 const iso = (date: string): string => new Date(`${date}T09:00:00Z`).toISOString();
 
@@ -270,6 +272,12 @@ interface SeedIssue {
   assignee: string;
   reason: string;
   flags?: string[];
+  /** What it said before a pass rewrote it — the other half of a `revised` flag. */
+  previous?: {
+    statement: string;
+    severity: 'material' | 'presentational' | 'question';
+    location: string;
+  };
   evidence?: Evidence;
   memory?: { entryId: string; effect: string };
   conflict?: { positions: { agent: string; verdict: string }[]; ruling: string };
@@ -398,6 +406,11 @@ const ISSUES: SeedIssue[] = [
     assignee: 'p-self',
     reason: 'Your standing instruction: allocation decisions come to you.',
     flags: ['revised'],
+    previous: {
+      statement: 'The Cephalus allocation basis in the batch does not match the rules document.',
+      severity: 'question',
+      location: 'alloc!cephalus',
+    },
     memory: {
       entryId: 'm-cephalus',
       effect: 'Raised as material rather than a question · the revised rules document was used as the comparison basis',
@@ -456,6 +469,11 @@ const ISSUES: SeedIssue[] = [
     assignee: 'p-roos',
     reason: 'They own the staging load and the counterparty master.',
     flags: ['revised'],
+    previous: {
+      statement: '52 rows carry a counterparty string that resolves to no entity on the master list.',
+      severity: 'material',
+      location: 'staging!B2:B101',
+    },
     memory: {
       entryId: 'm-bank',
       effect: '11 rows excluded · severity dropped from material to presentational',
@@ -693,6 +711,26 @@ async function applySeed(env: Env): Promise<void> {
         timestamp,
       ),
     );
+
+    // The version a pass replaced, so the demo shows a real diff rather than a
+    // `revised` chip pointing at nothing. pass_id is null: the seeded passes are
+    // summaries, and pinning this to one of them would claim a link the seed
+    // does not actually model.
+    if (issue.previous) {
+      statements.push(
+        env.DB.prepare(
+          `INSERT OR IGNORE INTO issue_revisions (issue_id, pass_id, statement, severity, location, recorded_at)
+           VALUES (?, ?, ?, ?, ?, ?)`,
+        ).bind(
+          `i-${OPEN_REVIEW}-${issue.ref}`,
+          null,
+          issue.previous.statement,
+          issue.previous.severity,
+          issue.previous.location,
+          timestamp,
+        ),
+      );
+    }
   });
 
   await env.DB.batch(statements);

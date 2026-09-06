@@ -10,6 +10,7 @@ import { errorText, formatDay } from '../lib';
 import Convergence from '../components/Convergence';
 import Icon from '../components/Icon';
 import Modal, { Field } from '../components/Modal';
+import Skeleton from '../components/Skeleton';
 
 export default function ReviewsView({
   workspace,
@@ -33,7 +34,7 @@ export default function ReviewsView({
         </button>
       </header>
 
-      {!workspace && loading && <p className="empty-note">Loading…</p>}
+      {!workspace && loading && <Skeleton shape="table" />}
 
       {workspace && workspace.reviews.length === 0 && (
         <p className="empty-note">No reviews yet. Start one and add the documents the panel should read against.</p>

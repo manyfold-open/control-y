@@ -66,6 +66,257 @@ export function usePoll(active: boolean, ms: number, tick: () => void): void {
   }, [active, ms]);
 }
 
+/* ───────── the dialog keyboard contract ───────── */
+
+/**
+ * What every surface carrying role="dialog" owes a keyboard: Escape closes it,
+ * focus moves inside on open, Tab cycles within it rather than walking off into
+ * the page behind, and focus goes back where it came from on close.
+ *
+ * Modal had the first two and the replies drawer had none, which made the drawer
+ * the one dialog in the product a keyboard could open but not leave.
+ *
+ * Two details worth keeping:
+ *
+ * · Escape is answered by the innermost dialog only. Each of these hooks listens
+ *   on `document`, so without the stack a single press would close a dialog and
+ *   whatever it was opened from.
+ * · A defaultPrevented Escape has already been spent. Select calls
+ *   preventDefault() when it closes its own list, and before this guard existed
+ *   dismissing a dropdown inside a dialog dismissed the dialog with it.
+ */
+
+const FOCUSABLE =
+  'a[href], button:not(:disabled), input:not(:disabled), textarea:not(:disabled), select:not(:disabled), [tabindex]:not([tabindex="-1"])';
+
+/** Innermost last. Only the last entry answers Escape. */
+const dialogStack: symbol[] = [];
+
+export function useDialogChrome(
+  box: React.RefObject<HTMLElement | null>,
+  onClose: () => void,
+  /** `field` lands on the first input — right for a form. `container` lands on
+   *  the dialog itself, for a long scrolling panel whose first field is far
+   *  enough down that focusing it would scroll the reader past the heading. */
+  initialFocus: 'field' | 'container' = 'field',
+): void {
+  // Read through a ref so the effect runs once per open. Call sites pass an
+  // inline arrow, and re-running would re-steal focus on every parent render —
+  // which, while a pass polls, means every couple of seconds.
+  const close = useRef(onClose);
+  close.current = onClose;
+
+  useEffect(() => {
+    const mine = Symbol('dialog');
+    dialogStack.push(mine);
+    const opener = document.activeElement as HTMLElement | null;
+
+    const target =
+      initialFocus === 'field'
+        ? box.current?.querySelector<HTMLElement>('input, textarea, select, .select-trigger')
+        : null;
+    (target ?? box.current)?.focus();
+
+    const onKey = (event: KeyboardEvent) => {
+      if (dialogStack[dialogStack.length - 1] !== mine || event.defaultPrevented) return;
+
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        close.current();
+        return;
+      }
+      if (event.key !== 'Tab' || !box.current) return;
+
+      // getClientRects rather than offsetParent: the drawer is position:fixed,
+      // where offsetParent answers for the wrong reason.
+      const stops = [...box.current.querySelectorAll<HTMLElement>(FOCUSABLE)].filter(
+        (node) => node.getClientRects().length > 0,
+      );
+      if (stops.length === 0) {
+        event.preventDefault();
+        box.current.focus();
+        return;
+      }
+      const edge = event.shiftKey ? stops[0] : stops[stops.length - 1];
+      const wrap = event.shiftKey ? stops[stops.length - 1] : stops[0];
+      if (!box.current.contains(document.activeElement) || document.activeElement === edge) {
+        event.preventDefault();
+        wrap.focus();
+      }
+    };
+
+    document.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('keydown', onKey);
+      dialogStack.splice(dialogStack.indexOf(mine), 1);
+      // No-op if the opener left with the dialog — closing a review from its own
+      // settings, for one.
+      opener?.focus?.();
+    };
+  }, [box, initialFocus]);
+}
+
+/* ───────── drag to dismiss ───────── */
+
+interface Drag {
+  id: number;
+  /** Where the gesture began. The whole travel is measured from here. */
+  startX: number;
+  /** The latest pointer position, and when it arrived. */
+  x: number;
+  at: number;
+  /** A position from ~80ms back, so a pause before release reads as a pause
+   *  rather than as whatever the last two pixels happened to be. */
+  markX: number;
+  markAt: number;
+}
+
+/**
+ * Shove a right-hand drawer off the right edge to close it.
+ *
+ * Hand-rolled on pointer events rather than pulled from an animation library:
+ * this is the only draggable surface in the product, and a runtime dependency
+ * that exists for one gesture is one every later reader has to account for.
+ *
+ * Two things it does not do, both on purpose:
+ *
+ * · No React state per frame. The transform is written straight to `panel`, so a
+ *   drag does not re-render the drawer's whole correspondent list sixty times a
+ *   second. `dragging` changes twice per gesture and is only there for a cursor.
+ * · No `transition: none` class. The inline `transition` is cleared before the
+ *   inline `transform` on release, in that order, so the stylesheet's transition
+ *   is live at the moment the value changes and the panel springs back rather
+ *   than snapping.
+ *
+ * Pointer capture rather than listeners on `document` — a drag that leaves the
+ * window still belongs to the element that started it, and the browser releases
+ * the capture for us when it cancels the gesture.
+ */
+export function useDragDismiss(
+  panel: React.RefObject<HTMLElement | null>,
+  onDismiss: () => void,
+): {
+  dragging: boolean;
+  /** Spread onto the handle — the header, not the whole panel. */
+  handle: {
+    onPointerDown: (event: React.PointerEvent<HTMLElement>) => void;
+    onPointerMove: (event: React.PointerEvent<HTMLElement>) => void;
+    onPointerUp: (event: React.PointerEvent<HTMLElement>) => void;
+    onPointerCancel: (event: React.PointerEvent<HTMLElement>) => void;
+  };
+} {
+  const [dragging, setDragging] = useState(false);
+  const live = useRef<Drag | null>(null);
+  const dismiss = useRef(onDismiss);
+  dismiss.current = onDismiss;
+
+  const finish = (commit: boolean) => {
+    const drag = live.current;
+    live.current = null;
+    setDragging(false);
+    if (panel.current) {
+      panel.current.style.transition = '';
+      panel.current.style.transform = '';
+    }
+    if (!drag || !commit) return;
+    // Either a long shove or a fast flick. A throw that only travelled 40px
+    // means the same thing as a slow push past halfway.
+    const speed = ((drag.x - drag.markX) / Math.max(1, drag.at - drag.markAt)) * 1000;
+    if (drag.x - drag.startX > 140 || speed > 480) dismiss.current();
+  };
+
+  return {
+    dragging,
+    handle: {
+      onPointerDown: (event) => {
+        // The close button lives in the header. A press on it is a click.
+        if (event.button !== 0 || (event.target as HTMLElement).closest('button')) return;
+        event.currentTarget.setPointerCapture(event.pointerId);
+        live.current = {
+          id: event.pointerId,
+          startX: event.clientX,
+          x: event.clientX,
+          at: event.timeStamp,
+          markX: event.clientX,
+          markAt: event.timeStamp,
+        };
+        if (panel.current) panel.current.style.transition = 'none';
+        setDragging(true);
+      },
+      onPointerMove: (event) => {
+        const drag = live.current;
+        if (!drag || drag.id !== event.pointerId) return;
+        if (event.timeStamp - drag.markAt > 80) {
+          drag.markX = drag.x;
+          drag.markAt = drag.at;
+        }
+        drag.x = event.clientX;
+        drag.at = event.timeStamp;
+        // Rightwards is the way out, so the panel follows. Leftwards is into the
+        // page behind it, so it does not move at all.
+        const offset = Math.max(0, event.clientX - drag.startX);
+        if (panel.current) panel.current.style.transform = `translateX(${offset}px)`;
+      },
+      onPointerUp: () => finish(true),
+      onPointerCancel: () => finish(false),
+    },
+  };
+}
+
+/* ───────── file drops ───────── */
+
+/**
+ * Drag a file anywhere onto `handlers`' element and it is read; drag one
+ * anywhere else and nothing happens — including the browser's own default,
+ * which is to navigate to the file and take the half-filled form with it.
+ * Suppressing that is the reason this is a hook and not four inline props.
+ */
+export function useFileDrop(onFile: (file: File) => void): {
+  dragging: boolean;
+  handlers: {
+    onDragOver: (event: React.DragEvent) => void;
+    onDragLeave: (event: React.DragEvent) => void;
+    onDrop: (event: React.DragEvent) => void;
+  };
+} {
+  const [dragging, setDragging] = useState(false);
+  const latest = useRef(onFile);
+  latest.current = onFile;
+
+  useEffect(() => {
+    const swallow = (event: DragEvent) => event.preventDefault();
+    document.addEventListener('dragover', swallow);
+    document.addEventListener('drop', swallow);
+    return () => {
+      document.removeEventListener('dragover', swallow);
+      document.removeEventListener('drop', swallow);
+    };
+  }, []);
+
+  return {
+    dragging,
+    handlers: {
+      onDragOver: (event) => {
+        if (!event.dataTransfer.types.includes('Files')) return;
+        event.preventDefault();
+        event.dataTransfer.dropEffect = 'copy';
+        setDragging(true);
+      },
+      // dragleave fires for every child crossed on the way in, so the only
+      // leave that counts is one whose destination is outside the zone.
+      onDragLeave: (event) => {
+        if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setDragging(false);
+      },
+      onDrop: (event) => {
+        event.preventDefault();
+        setDragging(false);
+        const file = event.dataTransfer.files?.[0];
+        if (file) latest.current(file);
+      },
+    },
+  };
+}
+
 /** Renders a copy button's label from what the last copy attempt did. */
 export type CopyLabel = (key: string, idle: string, done?: string, failed?: string) => string;
 

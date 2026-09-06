@@ -527,6 +527,11 @@ export async function deleteReview(env: Env, id: string): Promise<void> {
       'DELETE FROM feedback_links WHERE batch_id IN (SELECT id FROM feedback_batches WHERE review_id = ?)',
     ).bind(id),
     env.DB.prepare('DELETE FROM feedback_batches WHERE review_id = ?').bind(id),
+    // Before the issues, for the same reason as the two above: the subquery is
+    // the only thing that knows which revisions belonged to this review.
+    env.DB.prepare(
+      'DELETE FROM issue_revisions WHERE issue_id IN (SELECT id FROM issues WHERE review_id = ?)',
+    ).bind(id),
     env.DB.prepare('DELETE FROM issues WHERE review_id = ?').bind(id),
     env.DB.prepare('DELETE FROM passes WHERE review_id = ?').bind(id),
     env.DB.prepare('DELETE FROM retrospectives WHERE review_id = ?').bind(id),
@@ -776,18 +781,28 @@ interface IssueRow {
   draft: string | null;
   resolution: string | null;
   sent_at: string | null;
+  prev_statement: string | null;
+  prev_severity: string | null;
+  prev_location: string | null;
+  prev_recorded_at: string | null;
 }
 
 const ISSUE_COLUMNS =
-  'id, ref, location, severity, status, statement, why, raised_by, assignee_id, assignee_reason, flags, evidence, memory_ref, conflict, draft, resolution, sent_at';
+  'i.id, i.ref, i.location, i.severity, i.status, i.statement, i.why, i.raised_by, i.assignee_id, ' +
+  'i.assignee_reason, i.flags, i.evidence, i.memory_ref, i.conflict, i.draft, i.resolution, i.sent_at, ' +
+  'r.statement AS prev_statement, r.severity AS prev_severity, r.location AS prev_location, ' +
+  'r.recorded_at AS prev_recorded_at';
+
+const ISSUE_FROM = 'FROM issues i LEFT JOIN issue_revisions r ON r.issue_id = i.id';
+
+const toSeverity = (value: string | null): Severity =>
+  (['material', 'presentational', 'question'].includes(value ?? '') ? value : 'question') as Severity;
 
 const toIssue = (row: IssueRow): Issue => ({
   id: row.id,
   ref: row.ref,
   location: row.location,
-  severity: (['material', 'presentational', 'question'].includes(row.severity)
-    ? row.severity
-    : 'question') as Severity,
+  severity: toSeverity(row.severity),
   status: (['open', 'resolved', 'dismissed'].includes(row.status) ? row.status : 'open') as IssueStatus,
   statement: row.statement,
   whyItMatters: row.why,
@@ -802,11 +817,20 @@ const toIssue = (row: IssueRow): Issue => ({
   draft: row.draft,
   resolution: row.resolution,
   sentAt: row.sent_at,
+  previous:
+    row.prev_statement === null || row.prev_recorded_at === null
+      ? null
+      : {
+          statement: row.prev_statement,
+          severity: toSeverity(row.prev_severity),
+          location: row.prev_location ?? '',
+          recordedAt: row.prev_recorded_at,
+        },
 });
 
 export async function listIssues(env: Env, reviewId: string): Promise<Issue[]> {
   const { results } = await env.DB.prepare(
-    `SELECT ${ISSUE_COLUMNS} FROM issues WHERE review_id = ? ORDER BY sort_order, ref`,
+    `SELECT ${ISSUE_COLUMNS} ${ISSUE_FROM} WHERE i.review_id = ? ORDER BY i.sort_order, i.ref`,
   )
     .bind(reviewId)
     .all<IssueRow>();
@@ -814,11 +838,38 @@ export async function listIssues(env: Env, reviewId: string): Promise<Issue[]> {
 }
 
 export async function getIssue(env: Env, id: string): Promise<{ issue: Issue; reviewId: string }> {
-  const row = await env.DB.prepare(`SELECT ${ISSUE_COLUMNS}, review_id FROM issues WHERE id = ?`)
+  const row = await env.DB.prepare(`SELECT ${ISSUE_COLUMNS}, i.review_id ${ISSUE_FROM} WHERE i.id = ?`)
     .bind(id)
     .first<IssueRow & { review_id: string }>();
   if (!row) throw new HttpError(404, 'not_found', 'No such issue.');
   return { issue: toIssue(row), reviewId: row.review_id };
+}
+
+/**
+ * Keep what an issue said before this pass rewrote it, so the `revised` chip can
+ * show the reader what actually changed rather than only that something did.
+ *
+ * One row per issue: writing again replaces the last version. A pass that
+ * rewrites the same issue twice is one edit as far as the reader is concerned,
+ * and a full history is a second thing to read on a screen whose whole job is to
+ * be read quickly.
+ */
+export function recordIssueRevisionStatement(
+  env: Env,
+  issueId: string,
+  passId: string | null,
+  previous: { statement: string; severity: Severity; location: string },
+): D1PreparedStatement {
+  return env.DB.prepare(
+    `INSERT INTO issue_revisions (issue_id, pass_id, statement, severity, location, recorded_at)
+     VALUES (?, ?, ?, ?, ?, ?)
+     ON CONFLICT (issue_id) DO UPDATE SET
+       pass_id = excluded.pass_id,
+       statement = excluded.statement,
+       severity = excluded.severity,
+       location = excluded.location,
+       recorded_at = excluded.recorded_at`,
+  ).bind(issueId, passId, previous.statement, previous.severity, previous.location, now());
 }
 
 export interface IssueWrite {

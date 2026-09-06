@@ -33,16 +33,21 @@ import {
   formatWhen,
   initials,
   useCopy,
+  useDialogChrome,
+  useDragDismiss,
+  useFileDrop,
   usePoll,
   useResource,
   type CopyLabel,
 } from '../lib';
+import { diffWords } from '../../shared/diff';
 import { evidenceText } from '../../shared/evidence';
 import Convergence from '../components/Convergence';
 import Icon from '../components/Icon';
 import Modal, { Field } from '../components/Modal';
 import RetrospectivePanel from '../components/RetrospectivePanel';
 import Select from '../components/Select';
+import Skeleton from '../components/Skeleton';
 
 type FilterKey = 'open' | 'mine' | 'resolved';
 
@@ -347,7 +352,7 @@ export default function ReviewDetailView({
       </div>
     );
   }
-  if (!data) return <p className="empty-note">Loading…</p>;
+  if (!data) return <Skeleton shape="review" />;
 
   const { review, issues, passes, feedback, memory, roster, documents } = data;
   const selected = issues.find((issue) => issue.id === selectedId) ?? visible[0] ?? null;
@@ -714,6 +719,36 @@ function IssueDetail({
           </p>
         )}
       </header>
+
+      {/* The `revised` chip on the row says something changed. This is the only
+          place that says what. Kept above the settled/memory/conflict callouts
+          because it is about the sentence directly above it — and kept in the
+          plain neutral box, because the other three modifiers colour a callout
+          that carries a verdict and this one carries only history. */}
+      {issue.previous && (
+        <div className="callout">
+          <span className="callout-label">What the rewrite changed</span>
+          <p className="diff">
+            {diffWords(issue.previous.statement, issue.statement).map((part, index) =>
+              part.kind === 'removed' ? (
+                <del key={index}>{part.text}</del>
+              ) : part.kind === 'added' ? (
+                <ins key={index}>{part.text}</ins>
+              ) : (
+                <span key={index}>{part.text}</span>
+              ),
+            )}
+          </p>
+          <p className="callout-effect">
+            {issue.previous.severity !== issue.severity && (
+              <>
+                <b>Severity.</b> {issue.previous.severity} → {issue.severity} ·{' '}
+              </>
+            )}
+            {formatWhen(issue.previous.recordedAt)}
+          </p>
+        </div>
+      )}
 
       {issue.resolution && (
         <div className="callout resolved">
@@ -1168,6 +1203,8 @@ function ReviewSettings({
     }
   };
 
+  const drop = useFileDrop((file) => pickFile(file));
+
   const clearDocumentDraft = () => {
     setDocName('');
     setDocContent('');
@@ -1254,7 +1291,10 @@ function ReviewSettings({
             </div>
           ))}
 
-          <div className="doc-add">
+          {/* The whole panel is the target, not a dashed rectangle bolted under
+              it: the reader is already dragging the file when they look for
+              somewhere to put it, and a second box costs the height of one. */}
+          <div className={drop.dragging ? 'doc-add dropping' : 'doc-add'} {...drop.handlers}>
             <Field label="Add a document">
               <input value={docName} onChange={(event) => setDocName(event.target.value)} placeholder="staging.xlsx (extract)" />
             </Field>
@@ -1281,6 +1321,11 @@ function ReviewSettings({
               </Field>
             )}
             {readError && <div className="notice error">{readError}</div>}
+            {drop.dragging && (
+              <p className="drop-hint" aria-hidden>
+                Drop it to read it
+              </p>
+            )}
             <div className="inline-form-foot">
               <label className="button small file-button">
                 Load a file
@@ -1416,18 +1461,22 @@ function QueueOverlay({
   onSelect: (id: string) => void;
   onClose: () => void;
 }) {
-  useEffect(() => {
-    const onKey = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') onClose();
-    };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [onClose]);
+  const box = useRef<HTMLDivElement>(null);
+  /* `container`: this is a scrolling list, and the first thing in it is the
+     filter, which is where the reader is looking anyway. */
+  useDialogChrome(box, onClose, 'container');
 
   return (
     <>
       <div className="scrim" onClick={onClose} />
-      <div className="queue-overlay" role="dialog" aria-label="All issues" aria-modal="true">
+      <div
+        ref={box}
+        className="queue-overlay"
+        role="dialog"
+        aria-label="All issues"
+        aria-modal="true"
+        tabIndex={-1}
+      >
         <header className="queue-overlay-head">
           <nav className="segmented" aria-label="Filter issues">
             {FILTERS.map((entry) => (
@@ -1555,6 +1604,15 @@ function FeedbackDrawer({
   const undecided = countUndecided(feedback);
   const openIssues = issues.filter((issue) => issue.status === 'open');
 
+  const box = useRef<HTMLElement>(null);
+  /* `container`, not `field`: the first control in here is a paste box at the
+     foot of a long list, and focusing it would scroll the reader straight past
+     every reply they opened the drawer to read. */
+  useDialogChrome(box, onClose, 'container');
+  /* Same ref: the hook moves the panel by writing to it directly, so a shove
+     does not re-render the correspondent list on every pointer move. */
+  const drag = useDragDismiss(box, onClose);
+
   /* The question the old drawer never answered: who have I not heard from?
      It is answerable from what is already on screen — an open issue assigned
      to someone is a question that person still owes an answer to. */
@@ -1611,8 +1669,17 @@ function FeedbackDrawer({
   return (
     <>
       <div className="scrim" onClick={onClose} />
-      <aside className="drawer" role="dialog" aria-label="Replies">
-        <header className="drawer-head">
+      <aside
+        ref={box}
+        className={drag.dragging ? 'drawer dragging' : 'drawer'}
+        role="dialog"
+        aria-label="Replies"
+        tabIndex={-1}
+      >
+        {/* Dragged by its header only. The body holds a paste textarea, and a
+            drawer that listens for drags across its whole surface is a drawer
+            you cannot select text in. */}
+        <header className="drawer-head" {...drag.handle}>
           <div>
             <h2 className="drawer-title">Replies</h2>
             <p className="drawer-sub">{summary}</p>

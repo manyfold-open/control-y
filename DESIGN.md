@@ -603,6 +603,24 @@ The radius scale is tightly disciplined — the brand never uses a corner soften
 - Testimonial photos use 1:1 aspect with `{rounded.md}` (8px) softening
 - Code editor mockup hero image uses `{rounded.lg}` (12px) corners on a hairline-bordered card with a deep diffuse drop shadow
 
+## Motion
+
+Not extracted from the brand — see "Known Gaps". These are this product's own
+choices, recorded here because `styles.css` may not invent a value that is not
+in this file.
+
+| Token | Value | Use |
+|---|---|---|
+| `{motion.hover}` | 160ms ease | Hover, focus, colour and opacity on a thing that does not move. Inside the 150–200ms band Known Gaps recommends. The CSS `--motion`. |
+| `{motion.pulse}` | 1600ms ease-in-out | A skeleton breathing while its page loads. The only loop in the product. |
+
+`{motion.pulse}` is slow on purpose: a placeholder is on screen for as long as
+the network takes, and anything under about a second and a half turns into a
+flicker someone has to sit through. It fades a wash between 6% and 3% of
+`{colors.ink}` — no travelling highlight sweeping across the row, which would be
+a second moving thing to track on a screen whose content has not arrived, and
+which points in a direction the reading order does not have.
+
 ## Components
 
 > Per the no-hover policy, hover states are NOT documented. Default and pressed/active states only.

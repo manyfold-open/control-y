@@ -191,6 +191,20 @@ export interface Conflict {
   ruling: string;
 }
 
+/**
+ * What the issue said before the last pass rewrote it.
+ *
+ * Only ever the immediately previous version — the point is a comparison the
+ * reader can make at a glance, not a history they have to read. Null on an issue
+ * no pass has touched twice, which is most of them.
+ */
+export interface IssueRevision {
+  statement: string;
+  severity: Severity;
+  location: string;
+  recordedAt: string;
+}
+
 export interface Issue {
   id: string;
   ref: string;
@@ -209,6 +223,8 @@ export interface Issue {
   draft: string | null;
   resolution: string | null;
   sentAt: string | null;
+  /** Set when `flags` carries `revised`. See IssueRevision. */
+  previous: IssueRevision | null;
 }
 
 /** What one agent reported on one pass. `findings: 0` is a real result. */
