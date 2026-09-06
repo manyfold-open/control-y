@@ -11,6 +11,7 @@ import { send } from '../api';
 import { errorText, initials, useResource } from '../lib';
 import Icon from '../components/Icon';
 import Modal, { Field } from '../components/Modal';
+import Skeleton from '../components/Skeleton';
 
 /** The review the titles on this page belong to: the newest open one. */
 const activeReview = (workspace: Workspace | null): string | null =>
@@ -47,7 +48,7 @@ export default function PeopleView({
         </button>
       </header>
 
-      {!workspace && <p className="empty-note">Loading…</p>}
+      {!workspace && <Skeleton shape="people" />}
 
       {workspace && (
         <div className="table-card">

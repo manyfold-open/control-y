@@ -14,6 +14,7 @@ import { errorText, formatDay, useResource } from '../lib';
 import Icon from '../components/Icon';
 import Modal, { Field } from '../components/Modal';
 import Select from '../components/Select';
+import Skeleton from '../components/Skeleton';
 
 const ORDER: MemoryKind[] = ['Treatment', 'Pattern', 'Instruction', 'Fact'];
 
@@ -76,7 +77,7 @@ export default function MemoryView({
       </header>
 
       {error && <div className="notice error">{error}</div>}
-      {!workspace && <p className="empty-note">Loading…</p>}
+      {!workspace && <Skeleton shape="stack" rows={4} />}
       {workspace && entries.length === 0 && (
         <p className="empty-note">Nothing remembered yet. Settle an issue and press “Remember this”, or write a rule.</p>
       )}

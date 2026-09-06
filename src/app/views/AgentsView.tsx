@@ -13,6 +13,7 @@ import { errorText } from '../lib';
 import Icon from '../components/Icon';
 import Modal, { Field } from '../components/Modal';
 import Select from '../components/Select';
+import Skeleton from '../components/Skeleton';
 
 const ROLE_BLURB: Record<AgentRole, string> = {
   reviewer: 'One job, one prompt. It reads the documents on its own and reports what it finds.',
@@ -89,7 +90,7 @@ export default function AgentsView({
       </header>
 
       {error && <div className="notice error">{error}</div>}
-      {!workspace && <p className="empty-note">Loading…</p>}
+      {!workspace && <Skeleton shape="panel" />}
 
       {workspace && !workspace.panelReady && (
         <div className="notice">

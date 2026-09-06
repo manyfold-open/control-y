@@ -91,9 +91,12 @@
   --measure-detail: 740px;
 
   /* ── Motion ──
-     DESIGN.md "Known Gaps": upstream timings were not extracted. 160ms ease
-     sits inside its recommended 150–200ms band. */
+     DESIGN.md "Motion". Upstream timings were never extracted, so that section
+     records this product's own two: 160ms sits inside the 150–200ms band Known
+     Gaps recommends, and the pulse is deliberately slower than anything a
+     reader would call an animation. */
   --motion: 160ms ease;
+  --motion-pulse: 1600ms;
 
   color-scheme: light;
 }
@@ -546,7 +549,12 @@ p { margin: 0; }
 .select-trigger:disabled { cursor: default; opacity: 0.6; }
 .select-trigger:focus-visible { outline: none; border-color: var(--focus); box-shadow: 0 0 0 1px var(--focus); }
 .select-trigger[aria-expanded='true'] { border-color: var(--focus); box-shadow: 0 0 0 1px var(--focus); }
-.select-trigger > .icon { color: var(--stone); }
+/* Turning the chevron over while the list is open is the same sentence
+   `aria-expanded` already tells a screen reader, said to the eye. It is
+   driven off that attribute rather than a second `open` class, so the two
+   cannot disagree — and the animation costs no React state. */
+.select-trigger > .icon { color: var(--stone); transition: transform var(--motion); }
+.select-trigger[aria-expanded='true'] > .icon { transform: rotate(180deg); }
 
 .select-value { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .select-value.empty { color: var(--stone); }
@@ -672,6 +680,66 @@ p { margin: 0; }
 .people-cell.emphasis { color: var(--slate); }
 /* Shown only once the column head that explained the cell is gone. */
 .cell-label { display: none; }
+
+/* ═══ Skeleton ══════════════════════════════════════════════════════════════
+   Placed here because it borrows the table vocabulary above: the grid tables
+   reuse `.table-head` and `.review-row` outright, so a placeholder row sits in
+   exactly the columns the real one will — including the column collapse below
+   940px, which it inherits for free. Only the type is replaced by bars.
+
+   DESIGN.md "Motion", `{motion.pulse}`. A wash fading between 6% and 3% of the
+   ink — a breath, not a shimmer sweeping left to right. */
+
+@keyframes pulse {
+  from { background: color-mix(in srgb, var(--ink) 6%, transparent); }
+  to { background: color-mix(in srgb, var(--ink) 3%, transparent); }
+}
+
+.sk-bar {
+  display: block;
+  height: 9px;
+  border-radius: var(--rounded-full);
+  /* Declared, not only animated: the keyframes carry no fill-mode, so this is
+     what a bar looks like the instant before the loop starts and — more to the
+     point — what it looks like when the loop is switched off. */
+  background: color-mix(in srgb, var(--ink) 5%, transparent);
+  animation: pulse var(--motion-pulse) ease-in-out infinite alternate;
+}
+
+/* The rows are the real classes, so they already carry the grid, the padding and
+   the hairline. What they must not carry is the pointer and the hover: these are
+   divs, not buttons, and nothing here can be clicked. */
+.skeleton .sk-row, .skeleton .sk-head { cursor: default; }
+.skeleton .sk-row:hover { background: transparent; }
+.sk-head { opacity: 0.7; }
+
+.sk-stack-row {
+  display: grid; gap: var(--space-sm);
+  padding: var(--space-md) var(--space-lg);
+  border-bottom: 1px solid var(--hairline-soft);
+}
+.sk-stack-row:last-child { border-bottom: 0; }
+
+.sk-panel { display: grid; gap: var(--space-lg); padding: var(--space-lg); }
+.sk-panel-row { display: grid; gap: var(--space-sm); }
+
+/* Stands in for `.page`, which the real review detail does not use: it renders
+   `.review` straight into `main`, and that is `height: 100%`. */
+.skeleton-review { height: 100%; }
+
+.sk-review .review-head { display: grid; gap: var(--space-sm); padding: var(--space-md) var(--space-xxl); }
+/* The queue strip's ticks at the size the real ones are. `.queue-mark` is a
+   button — reusing it here would hand a placeholder a pointer and a hover. */
+.sk-mark { width: 8px; height: 9px; flex: none; border-radius: 2px; }
+.sk-detail { display: grid; gap: var(--space-md); align-content: start; padding: var(--space-xxl); }
+
+/* Read but not seen. The bars carry no text, so the sentence the page used to
+   show has to survive somewhere a screen reader still reaches. */
+.sr-only {
+  position: absolute; width: 1px; height: 1px;
+  margin: -1px; padding: 0; border: 0;
+  overflow: hidden; clip-path: inset(50%); white-space: nowrap;
+}
 
 /* ═══ Convergence — the count of turns ═════════════════════════════════════
    Typography carries it. A bar chart at this size is decoration competing with
@@ -870,6 +938,9 @@ kbd {
   background: var(--canvas);
   border-right: 1px solid var(--hairline);
   box-shadow: var(--elev-3);
+  /* Focused on open so the keyboard has somewhere to be. Its arrival is the
+     ring; a second one drawn around the whole panel says nothing. */
+  outline: none;
 }
 
 .queue-overlay-head {
@@ -1050,6 +1121,32 @@ kbd {
 .conflict-position { color: var(--slate); }
 .conflict-agent { display: block; color: var(--ink); font: 400 12px/1.5 var(--font-mono); }
 
+/* The rewrite callout keeps the neutral box on purpose. "The panel changed its
+   mind about this" is not settled, judgment or material — those three roles mean
+   one thing each, and spending red on a deleted clause would claim a finding is
+   material because a word came out of it.
+
+   So the diff is carried by weight, not by hue: what went is struck through and
+   dimmed to the colour metadata already uses, and what arrived is the full ink
+   the statement itself is set in, with a wash faint enough to find but not to
+   read as a highlight. */
+.diff { font-size: 14px; line-height: 1.55; color: var(--slate); }
+
+.diff del {
+  color: var(--stone);
+  text-decoration: line-through;
+  text-decoration-color: color-mix(in srgb, var(--stone) 60%, transparent);
+}
+
+.diff ins {
+  color: var(--ink);
+  font-weight: 500;
+  text-decoration: none;
+  background: color-mix(in srgb, var(--ink) 6%, transparent);
+  border-radius: var(--rounded-xs);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--ink) 6%, transparent);
+}
+
 /* ═══ Code & evidence ═══════════════════════════════════════════════════════ */
 
 code {
@@ -1194,13 +1291,29 @@ code {
   background: var(--canvas);
   border-left: 1px solid var(--hairline);
   box-shadow: var(--elev-3);
+  /* Only for the snap back. While a drag is live the transform is set on every
+     pointer move, and a transition on top of that is lag under the finger — so
+     useDragDismiss suppresses this with an inline `transition: none` for the
+     length of the gesture. It cannot be a `.dragging` rule: React commits the
+     class after the style write, and the panel would jump home unanimated. */
+  transition: transform var(--motion);
 }
+.drawer:focus-visible { outline: none; }
 
 .drawer-head {
   display: flex; align-items: flex-start; justify-content: space-between; gap: var(--space-md);
   padding: var(--space-lg) var(--space-xl);
   border-bottom: 1px solid var(--hairline);
+  /* The handle. `touch-action` so a horizontal drag on a phone is not taken by
+     the scroller first, and `user-select` so a shove does not select the title
+     on the way. */
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
 }
+.drawer.dragging .drawer-head { cursor: grabbing; }
+/* The close button inside the header is a button, not part of the handle. */
+.drawer-head button { cursor: pointer; }
 
 .drawer-title { font: 600 17px/1.35 var(--font-sans); }
 .drawer-sub { margin-top: 2px; color: var(--stone); font-size: 13px; }
@@ -1568,6 +1681,8 @@ input:focus-visible, textarea:focus-visible, select:focus-visible {
   width: min(420px, calc(100vw - 32px)); max-height: min(88vh, 880px);
   background: var(--canvas); border: 1px solid var(--hairline);
   border-radius: var(--rounded-lg); padding: var(--space-lg); box-shadow: var(--elev-3);
+  /* Only ever focused as the fallback when there is no field to land on. */
+  outline: none;
 }
 .dialog.wide { width: min(680px, calc(100vw - 32px)); }
 .dialog h2 { margin: 0; font: 600 17px/1.4 var(--font-sans); }
@@ -1656,6 +1771,16 @@ input:focus-visible, textarea:focus-visible, select:focus-visible {
 .doc-size { color: var(--stone); font: 400 12px/1.4 var(--font-mono); }
 .doc-add { display: grid; gap: var(--space-sm); margin-top: var(--space-sm); }
 .file-preview-note { color: var(--stone); font-size: 12px; line-height: 1.5; }
+
+/* An outline rather than a border: an outline is drawn outside the box and takes
+   no space, so the form does not shift the instant a file crosses it. */
+.doc-add.dropping {
+  outline: 1px dashed var(--focus);
+  outline-offset: var(--space-xs);
+  border-radius: var(--rounded-md);
+}
+
+.drop-hint { color: var(--slate); font-size: 12px; text-align: center; }
 
 
 /* ═══ Responsive ════════════════════════════════════════════════════════════
@@ -1934,4 +2059,16 @@ input:focus-visible, textarea:focus-visible, select:focus-visible {
   .chat-log { max-height: none; }
   .composer { grid-template-columns: minmax(0, 1fr); }
   .composer .button { justify-content: center; }
+}
+
+/* ═══ Reduced motion ════════════════════════════════════════════════════════
+   Scoped to the one thing in this stylesheet that loops. Everything else here
+   is a 160ms transition on a colour, which is what this query exists to spare
+   people from rather than what it targets. */
+
+@media (prefers-reduced-motion: reduce) {
+  /* The bars keep the background they were declared with and hold still.
+     Nothing is lost: the pulse says "still waiting", and the skeleton's
+     role="status" says it in words. */
+  .sk-bar { animation: none; }
 }

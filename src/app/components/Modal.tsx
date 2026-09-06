@@ -2,12 +2,14 @@
  * The one dialog. Everything the product creates or edits away from the page —
  * a review, a person, a memory entry, an agent prompt — opens in this.
  *
- * Escape closes, a click on the scrim closes, and focus moves into the dialog on
- * open so the keyboard lands somewhere useful.
+ * A click on the scrim closes it. Everything the keyboard is owed — Escape,
+ * focus in on open, Tab kept inside, focus back to the opener on close — comes
+ * from useDialogChrome, which the replies drawer shares.
  */
 
-import { useEffect, useRef, type ReactNode } from 'react';
+import { useRef, type ReactNode } from 'react';
 import Icon from './Icon';
+import { useDialogChrome } from '../lib';
 
 export default function Modal({
   title,
@@ -23,15 +25,7 @@ export default function Modal({
   children: ReactNode;
 }) {
   const box = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    const onKey = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') onClose();
-    };
-    document.addEventListener('keydown', onKey);
-    box.current?.querySelector<HTMLElement>('input, textarea, select, .select-trigger')?.focus();
-    return () => document.removeEventListener('keydown', onKey);
-  }, [onClose]);
+  useDialogChrome(box, onClose);
 
   return (
     <div
@@ -40,7 +34,16 @@ export default function Modal({
         if (event.target === event.currentTarget) onClose();
       }}
     >
-      <div className={wide ? 'dialog wide' : 'dialog'} role="dialog" aria-modal="true" aria-label={title} ref={box}>
+      {/* tabIndex so focus has somewhere to land in a dialog with no field in
+          it, and somewhere to wrap back to when Tab reaches the last control. */}
+      <div
+        className={wide ? 'dialog wide' : 'dialog'}
+        role="dialog"
+        aria-modal="true"
+        aria-label={title}
+        tabIndex={-1}
+        ref={box}
+      >
         <header className="dialog-head">
           <div>
             <h2>{title}</h2>

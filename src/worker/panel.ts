@@ -50,6 +50,7 @@ import {
   listRoster,
   listScopedMemory,
   readDocuments,
+  recordIssueRevisionStatement,
   upsertIssueStatement,
   type IssueWrite,
   type PanelDocument,
@@ -896,8 +897,32 @@ async function runPass(
       agentNames: agents.map((agent) => agent.name),
     });
 
+    // What each rewritten issue said before this pass. Read off `issues`, which is
+    // the state as it was loaded at the top of the run, and written in the same
+    // batch as the rewrite — so the row can never be recorded against a statement
+    // that failed to land.
+    //
+    // Keyed on the text actually differing rather than on the `revised` flag: the
+    // consolidator sets that flag itself, and an issue it flags but returns
+    // verbatim would otherwise leave the reader a diff of nothing.
+    const byRef = new Map(issues.map((issue) => [issue.ref, issue]));
+    const revisions = writes.flatMap((write) => {
+      const before = byRef.get(write.ref);
+      if (!before || before.statement === write.statement) return [];
+      return [
+        recordIssueRevisionStatement(env, before.id, passId, {
+          statement: before.statement,
+          severity: before.severity,
+          location: before.location,
+        }),
+      ];
+    });
+
     if (writes.length > 0) {
-      await env.DB.batch(writes.map((issue) => upsertIssueStatement(env, reviewId, issue)));
+      await env.DB.batch([
+        ...writes.map((issue) => upsertIssueStatement(env, reviewId, issue)),
+        ...revisions,
+      ]);
     }
     // Replies folded into this pass stop being pending work. A batch the panel
     // could not read is left alone: it holds nothing, and the user decides whether

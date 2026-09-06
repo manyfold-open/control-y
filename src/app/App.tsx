@@ -20,6 +20,7 @@ import SettingsView from './components/SettingsView';
 import PasswordGate from './components/PasswordGate';
 import Icon from './components/Icon';
 import Logo from './components/Logo';
+import Skeleton from './components/Skeleton';
 import ReviewsView from './views/ReviewsView';
 import ReviewDetailView from './views/ReviewDetailView';
 import PeopleView from './views/PeopleView';
@@ -208,7 +209,7 @@ export default function App() {
               </div>
             )}
 
-            {!state && !stateError && <p className="empty-note">Loading…</p>}
+            {!state && !stateError && <Skeleton shape="stack" rows={3} />}
 
             {state &&
               (connTab === 'chat' ? (

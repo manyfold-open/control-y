@@ -20,6 +20,7 @@ const issue = (fields: Partial<Issue>): Issue => ({
   draft: null,
   resolution: null,
   sentAt: null,
+  previous: null,
   ...fields,
 });
 
