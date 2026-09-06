@@ -45,6 +45,7 @@ import { evidenceText } from '../../shared/evidence';
 import Convergence from '../components/Convergence';
 import Icon from '../components/Icon';
 import Modal, { Field } from '../components/Modal';
+import { addFilesToReview, limitsOf, megabytes, rejectionFor } from '../upload';
 import RetrospectivePanel from '../components/RetrospectivePanel';
 import Select from '../components/Select';
 import Skeleton from '../components/Skeleton';
@@ -1109,32 +1110,11 @@ function RememberDialog({
 
 /* ── Review settings and documents ─────────────────────────────────────────── */
 
-const TEXT_FILE = /\.(txt|csv|tsv|md|json|log|xml|yaml|yml|html|htm|css|js|jsx|ts|tsx|sql|rtf)$/i;
-const VIDEO_FILE = /\.(3gp|avi|flv|m2ts|m4v|mkv|mov|mp4|mpeg|mpg|ogv|vob|webm|wmv)$/i;
-
-const isVideoFile = (file: File): boolean => file.type.toLowerCase().startsWith('video/') || VIDEO_FILE.test(file.name);
-const isTextFile = (file: File): boolean => file.type.toLowerCase().startsWith('text/') || TEXT_FILE.test(file.name);
-
-const megabytes = (bytes: number): string => `${Math.round(bytes / (1024 * 1024))} MB`;
-
-interface UploadTicket {
-  documentId: string;
-  uploadUrl: string;
-  mediaType: string;
-}
-
-/**
- * Uploads straight to R2 with the presigned URL, so the bytes never pass through
- * the Worker. The content-type is signed into that URL, so it has to be sent back
- * exactly — anything else and R2 rejects the signature.
- */
-async function putToR2(uploadUrl: string, file: File, mediaType: string): Promise<void> {
-  const response = await fetch(uploadUrl, {
-    method: 'PUT',
-    headers: { 'content-type': mediaType },
-    body: file,
-  });
-  if (!response.ok) throw new Error(`The upload was refused (HTTP ${response.status}).`);
+interface QueuedFile {
+  key: string;
+  file: File;
+  failed: boolean;
+  error: string;
 }
 
 function ReviewSettings({
@@ -1158,89 +1138,62 @@ function ReviewSettings({
   const [period, setPeriod] = useState(review.period);
   const [docName, setDocName] = useState('');
   const [docContent, setDocContent] = useState('');
-  const [pending, setPending] = useState<File | null>(null);
+  /** Files still going up, and the ones that could not. Anything that lands
+      leaves this list and reappears below as a document of the review. */
+  const [queue, setQueue] = useState<QueuedFile[]>([]);
   const [readError, setReadError] = useState('');
-  const [uploading, setUploading] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const picker = useRef<HTMLInputElement>(null);
 
   const dirty = name.trim() !== review.name || counterparty !== review.counterparty || period !== review.period;
-  const maxBytes = workspace?.maxUploadBytes ?? 10 * 1024 * 1024;
-  const uploadsEnabled = workspace?.uploadsEnabled ?? false;
+  const limits = limitsOf(workspace);
 
   /**
-   * Nothing is read here beyond a text file's own text. A binary is only held as
-   * a File handle until Add is pressed — the size is checked first, so an
-   * oversized pick costs nothing rather than being read and encoded before the
-   * server refuses it.
+   * The review already exists here, so there is nothing to wait for: a dropped
+   * file is checked, sent, and either becomes a document row below or stays in
+   * the queue saying why it did not.
    */
-  const pickFile = (file: File | undefined) => {
-    if (!file) return;
-    if (isVideoFile(file)) {
-      setReadError('Video files are not supported yet. Choose any other file type.');
-      return;
-    }
-    if (file.size > maxBytes) {
-      setReadError(
-        `${file.name} is ${formatBytes(file.size)}. The limit is ${megabytes(maxBytes)}. Paste an extract as text instead.`,
-      );
-      return;
-    }
+  const take = async (picked: FileList | null) => {
+    if (!picked || picked.length === 0) return;
+    const fresh: QueuedFile[] = Array.from(picked).map((file) => {
+      const rejection = rejectionFor(file, limits);
+      return {
+        key: `${file.name}:${file.size}:${file.lastModified}`,
+        file,
+        failed: rejection !== '',
+        error: rejection,
+      };
+    });
+    setQueue((current) => [...current.filter((row) => !fresh.some((one) => one.key === row.key)), ...fresh]);
+
+    const sending = fresh.filter((row) => !row.failed);
+    if (sending.length === 0) return;
     setReadError('');
-    setDocName(file.name);
-    if (isTextFile(file)) {
-      setPending(null);
-      file
-        .text()
-        .then(setDocContent)
-        .catch(() => setReadError('Could not read that file. Try choosing it again or paste its contents.'));
-    } else {
-      if (!uploadsEnabled) {
-        setReadError('File uploads are not configured on this deployment. Paste an extract as text instead.');
-        return;
-      }
-      setPending(file);
+    await act(() =>
+      addFilesToReview(
+        review.id,
+        sending.map(({ key, file }) => ({ key, file })),
+        limits,
+        (key, failure) =>
+          setQueue((current) =>
+            failure
+              ? current.map((row) => (row.key === key ? { ...row, failed: true, error: failure } : row))
+              : current.filter((row) => row.key !== key),
+          ),
+      ),
+    );
+  };
+
+  const drop = useFileDrop((files) => void take(files));
+
+  /** Pasted text is prompt material, not a file: it goes straight to the API. */
+  const addExtract = async () => {
+    const ok = await act(() =>
+      send('POST', `/api/reviews/${review.id}/documents`, { name: docName.trim(), content: docContent }),
+    );
+    if (ok) {
+      setDocName('');
       setDocContent('');
-    }
-  };
-
-  const drop = useFileDrop((file) => pickFile(file));
-
-  const clearDocumentDraft = () => {
-    setDocName('');
-    setDocContent('');
-    setPending(null);
-  };
-
-  /** Text goes straight to the API. A file is uploaded to R2 first, then confirmed. */
-  const addDocument = async () => {
-    if (!pending) {
-      const ok = await act(() =>
-        send('POST', `/api/reviews/${review.id}/documents`, { name: docName.trim(), content: docContent }),
-      );
-      if (ok) clearDocumentDraft();
-      return;
-    }
-    setUploading(true);
-    setReadError('');
-    try {
-      const ticket = await send<UploadTicket>('POST', `/api/reviews/${review.id}/documents/upload-url`, {
-        name: docName.trim(),
-        mediaType: pending.type || 'application/octet-stream',
-        bytes: pending.size,
-      });
-      await putToR2(ticket.uploadUrl, pending, ticket.mediaType);
-      const ok = await act(() =>
-        send('POST', `/api/reviews/${review.id}/documents`, {
-          name: docName.trim(),
-          documentId: ticket.documentId,
-          mediaType: ticket.mediaType,
-        }),
-      );
-      if (ok) clearDocumentDraft();
-    } catch (caught) {
-      setReadError(errorText(caught));
-    } finally {
-      setUploading(false);
     }
   };
 
@@ -1291,60 +1244,79 @@ function ReviewSettings({
             </div>
           ))}
 
-          {/* The whole panel is the target, not a dashed rectangle bolted under
-              it: the reader is already dragging the file when they look for
-              somewhere to put it, and a second box costs the height of one. */}
-          <div className={drop.dragging ? 'doc-add dropping' : 'doc-add'} {...drop.handlers}>
-            <Field label="Add a document">
-              <input value={docName} onChange={(event) => setDocName(event.target.value)} placeholder="staging.xlsx (extract)" />
-            </Field>
-            {pending ? (
-              <div className="file-preview" aria-live="polite">
-                <strong>{pending.name}</strong>
-                <span>
-                  {formatBytes(pending.size)} · Ready to upload · {pending.type || 'application/octet-stream'}
+          <div className={drop.dragging ? 'doc-drop dragging' : 'doc-drop'} {...drop.handlers}>
+            {queue.length === 0 ? (
+              <button type="button" className="drop-zone" onClick={() => picker.current?.click()}>
+                <Icon name="reviews" size={22} />
+                <span className="drop-zone-line">Drop the documents the panel should read</span>
+                <span className="drop-zone-note">
+                  {limits.uploadsEnabled
+                    ? `or choose files · up to ${megabytes(limits.maxBytes)} each`
+                    : 'or choose files · text files only on this deployment'}
                 </span>
-                <span className="file-preview-note">
-                  The panel downloads it and reads it during a pass.
-                </span>
-              </div>
+              </button>
             ) : (
-              <Field
-                label="Its text"
-                hint={
-                  uploadsEnabled
-                    ? `Paste an extract, or load a file up to ${megabytes(maxBytes)}.`
-                    : 'Paste an extract. File uploads are not configured on this deployment.'
-                }
-              >
-                <textarea rows={5} value={docContent} onChange={(event) => setDocContent(event.target.value)} />
-              </Field>
+              <div className="doc-queue" aria-live="polite">
+                {queue.map((row) => (
+                  <div key={row.key} className={row.failed ? 'doc-queue-row failed' : 'doc-queue-row uploading'}>
+                    <Icon name={row.failed ? 'alert' : 'reviews'} />
+                    <span className="doc-name">{row.file.name}</span>
+                    <span className="doc-queue-why">{row.failed ? row.error : 'uploading…'}</span>
+                    {row.failed && (
+                      <button
+                        className="button icon ghost"
+                        type="button"
+                        aria-label={`Dismiss ${row.file.name}`}
+                        onClick={() => setQueue((current) => current.filter((one) => one.key !== row.key))}
+                      >
+                        <Icon name="x" />
+                      </button>
+                    )}
+                  </div>
+                ))}
+                <button type="button" className="doc-queue-add" onClick={() => picker.current?.click()}>
+                  <Icon name="plus" /> Add more, or drop them here
+                </button>
+              </div>
             )}
-            {readError && <div className="notice error">{readError}</div>}
-            {drop.dragging && (
-              <p className="drop-hint" aria-hidden>
-                Drop it to read it
-              </p>
-            )}
+          </div>
+
+          <input
+            ref={picker}
+            type="file"
+            multiple
+            hidden
+            onChange={(event) => {
+              void take(event.target.files);
+              event.currentTarget.value = '';
+            }}
+          />
+
+          {readError && <div className="notice error">{readError}</div>}
+
+          {/* Pasting is not a lesser way of loading a file: an extract out of a
+              spreadsheet or the body of an email is often the only form the
+              evidence comes in. It keeps its own name because it has no file to
+              take one from. */}
+          <div className="doc-add">
+            <Field label="Or paste an extract">
+              <input
+                value={docName}
+                onChange={(event) => setDocName(event.target.value)}
+                placeholder="staging.xlsx (extract)"
+              />
+            </Field>
+            <Field label="Its text">
+              <textarea rows={4} value={docContent} onChange={(event) => setDocContent(event.target.value)} />
+            </Field>
             <div className="inline-form-foot">
-              <label className="button small file-button">
-                Load a file
-                <input
-                  type="file"
-                  accept="*/*"
-                  onChange={(event) => {
-                    pickFile(event.target.files?.[0]);
-                    event.currentTarget.value = '';
-                  }}
-                />
-              </label>
               <button
                 className="button primary small"
                 type="button"
-                disabled={busy || uploading || !docName.trim() || (!pending && !docContent.trim())}
-                onClick={() => void addDocument()}
+                disabled={busy || !docName.trim() || !docContent.trim()}
+                onClick={() => void addExtract()}
               >
-                {uploading ? 'Uploading…' : 'Add document'}
+                Add document
               </button>
             </div>
           </div>

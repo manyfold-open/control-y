@@ -111,9 +111,14 @@ export function useDialogChrome(
     dialogStack.push(mine);
     const opener = document.activeElement as HTMLElement | null;
 
+    // A file input is a transparent overlay or a hidden sibling wherever it
+    // appears in this product, so focusing it would put the keyboard somewhere
+    // the user cannot see. The first control they can actually read gets it.
     const target =
       initialFocus === 'field'
-        ? box.current?.querySelector<HTMLElement>('input, textarea, select, .select-trigger')
+        ? box.current?.querySelector<HTMLElement>(
+            'input:not([type=file]), textarea, select, .select-trigger',
+          )
         : null;
     (target ?? box.current)?.focus();
 
@@ -266,12 +271,16 @@ export function useDragDismiss(
 /* ───────── file drops ───────── */
 
 /**
- * Drag a file anywhere onto `handlers`' element and it is read; drag one
+ * Drag files anywhere onto `handlers`' element and they are taken; drag them
  * anywhere else and nothing happens — including the browser's own default,
  * which is to navigate to the file and take the half-filled form with it.
  * Suppressing that is the reason this is a hook and not four inline props.
+ *
+ * The whole drop is handed over rather than its first file: a reader dragging
+ * the documents for a review drags all of them at once, and silently keeping
+ * one of five is worse than refusing the drop outright.
  */
-export function useFileDrop(onFile: (file: File) => void): {
+export function useFileDrop(onFiles: (files: FileList) => void): {
   dragging: boolean;
   handlers: {
     onDragOver: (event: React.DragEvent) => void;
@@ -280,8 +289,8 @@ export function useFileDrop(onFile: (file: File) => void): {
   };
 } {
   const [dragging, setDragging] = useState(false);
-  const latest = useRef(onFile);
-  latest.current = onFile;
+  const latest = useRef(onFiles);
+  latest.current = onFiles;
 
   useEffect(() => {
     const swallow = (event: DragEvent) => event.preventDefault();
@@ -310,8 +319,8 @@ export function useFileDrop(onFile: (file: File) => void): {
       onDrop: (event) => {
         event.preventDefault();
         setDragging(false);
-        const file = event.dataTransfer.files?.[0];
-        if (file) latest.current(file);
+        const files = event.dataTransfer.files;
+        if (files && files.length > 0) latest.current(files);
       },
     },
   };

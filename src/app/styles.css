@@ -1801,26 +1801,6 @@ input:focus-visible, textarea:focus-visible, select:focus-visible {
 .draft-editor { width: 100%; resize: vertical; font: 400 14px/1.65 var(--font-sans); }
 .prompt-editor { font-family: var(--font-mono); font-size: 13px; line-height: 1.6; }
 
-/* A file input is unstyleable, so the label is the button and the input is a
-   transparent overlay on it. */
-.file-button { position: relative; overflow: hidden; }
-.file-button input {
-  position: absolute; inset: 0; min-height: 0; padding: 0; border: 0;
-  opacity: 0; cursor: pointer;
-}
-
-.file-preview {
-  display: grid;
-  gap: 2px;
-  border: 1px solid var(--hairline);
-  border-radius: var(--rounded-md);
-  padding: var(--space-sm);
-  background: var(--surface-soft);
-  color: var(--slate);
-  font-size: 13px;
-}
-.file-preview span { color: var(--stone); font: 400 12px/1.4 var(--font-mono); overflow-wrap: anywhere; }
-
 .doc-row {
   display: flex; align-items: center; gap: var(--space-sm);
   padding: var(--space-xs) 0; border-bottom: 1px solid var(--hairline-soft);
@@ -1829,17 +1809,87 @@ input:focus-visible, textarea:focus-visible, select:focus-visible {
 .doc-name { flex: 1; min-width: 0; color: var(--slate); font-size: 13px; overflow-wrap: anywhere; }
 .doc-size { color: var(--stone); font: 400 12px/1.4 var(--font-mono); }
 .doc-add { display: grid; gap: var(--space-sm); margin-top: var(--space-sm); }
-.file-preview-note { color: var(--stone); font-size: 12px; line-height: 1.5; }
 
-/* An outline rather than a border: an outline is drawn outside the box and takes
-   no space, so the form does not shift the instant a file crosses it. */
-.doc-add.dropping {
-  outline: 1px dashed var(--focus);
-  outline-offset: var(--space-xs);
-  border-radius: var(--rounded-md);
+/* ── Documents, on the way in ──────────────────────────────────────────────
+   The new-review dialog and a review's settings both take files this way, so
+   the zone they land in and the queue they land as are one component. A row
+   says what it is and, once something has happened to it, what happened: a
+   size before it goes, a reason if it cannot go at all. */
+
+.doc-drop { display: grid; }
+.doc-drop.dragging .drop-zone,
+.doc-drop.dragging .doc-queue { border-color: var(--focus); background: var(--surface-soft); }
+.drop-zone {
+  display: grid; justify-items: center; gap: var(--space-xxs);
+  padding: var(--space-xl) var(--space-md);
+  border: 1px dashed var(--muted-ink); border-radius: var(--rounded-lg);
+  background: var(--surface-soft); text-align: center; cursor: pointer;
+  transition: border-color var(--motion), background var(--motion);
 }
+.drop-zone:hover { border-color: var(--steel); }
+.drop-zone:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+.drop-zone .icon { color: var(--stone); }
+.drop-zone-line { color: var(--charcoal); font-size: 14px; }
+.drop-zone-note { color: var(--stone); font-size: 12px; }
 
-.drop-hint { color: var(--slate); font-size: 12px; text-align: center; }
+.doc-queue {
+  border: 1px solid var(--hairline); border-radius: var(--rounded-lg); overflow: hidden;
+  transition: border-color var(--motion), background var(--motion);
+}
+.doc-queue-head {
+  display: flex; align-items: center; justify-content: space-between; gap: var(--space-sm);
+  padding: var(--space-xs) var(--space-sm);
+  border-bottom: 1px solid var(--hairline-soft); background: var(--surface-soft);
+  color: var(--steel); font: 500 13px/1.4 var(--font-sans);
+}
+.doc-queue-head .tnum { color: var(--stone); font: 400 12px/1.4 var(--font-mono); }
+
+.doc-queue-row {
+  display: flex; align-items: center; flex-wrap: wrap; gap: var(--space-xs);
+  padding: var(--space-xxs) var(--space-sm);
+  border-bottom: 1px solid var(--hairline-soft);
+}
+.doc-queue-row:last-child { border-bottom: 0; }
+.doc-queue-row .icon { flex: none; color: var(--steel); }
+.doc-queue-row .doc-name { flex: 1; }
+.doc-queue-row.rejected, .doc-queue-row.failed { background: var(--material-wash); }
+.doc-queue-row.rejected .icon, .doc-queue-row.failed .icon { color: var(--material); }
+.doc-queue-row.done .doc-name { color: var(--steel); }
+
+/* Never a progress bar. The PUT reports nothing on the way, and a bar that
+   invented a number would be the only thing on screen the product made up. */
+.doc-queue-why { color: var(--stone); font-size: 12px; line-height: 1.5; }
+.doc-queue-row.rejected .doc-queue-why,
+.doc-queue-row.failed .doc-queue-why {
+  flex: 1 1 100%; order: 1; color: var(--material);
+}
+/* Uploaded is the absence of anything left to do, not an achievement. Green
+   means severity or settled work everywhere else and keeps meaning that. */
+.doc-queue-done .icon { color: var(--muted-ink); }
+
+.doc-queue-add {
+  display: flex; align-items: center; gap: var(--space-xxs);
+  width: 100%; padding: var(--space-xs) var(--space-sm);
+  border: 0; background: none; text-align: left; cursor: pointer;
+  color: var(--steel); font: 400 13px/1.4 var(--font-sans);
+  transition: background var(--motion), color var(--motion);
+}
+.doc-queue-add:hover { background: var(--surface-soft); color: var(--ink); }
+.doc-queue-add:focus-visible { outline: 2px solid var(--focus); outline-offset: -2px; }
+.doc-queue-add .icon { color: var(--muted-ink); }
+
+/* The fields that decide nothing wait behind this rather than standing between
+   the documents and the button. */
+.more-toggle {
+  display: flex; align-items: center; gap: var(--space-xxs); justify-self: start;
+  padding: 0; border: 0; background: none; cursor: pointer;
+  color: var(--steel); font: 500 13px/1.4 var(--font-sans);
+}
+.more-toggle:hover { color: var(--ink); }
+.more-toggle:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; border-radius: var(--rounded-xs); }
+.more-toggle:disabled { color: var(--muted-ink); cursor: default; }
+.more-toggle .icon { color: var(--muted-ink); transform: rotate(-90deg); transition: transform var(--motion); }
+.more-toggle[aria-expanded='true'] .icon { transform: rotate(0deg); }
 
 
 /* ═══ Responsive ════════════════════════════════════════════════════════════
@@ -2109,6 +2159,7 @@ input:focus-visible, textarea:focus-visible, select:focus-visible {
   .button.icon, .icon-button { width: 44px; height: 44px; }
   input, textarea, select, .select-trigger { font-size: 16px; min-height: 44px; }
   .select-option { min-height: 44px; }
+  .doc-queue-add, .doc-queue-row { min-height: 44px; }
   .segment { padding: var(--space-sm) var(--space-sm); }
   .tab { padding: 9px 16px; }
   .crumb { padding: var(--space-xxs) 0; }
