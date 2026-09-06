@@ -1355,6 +1355,16 @@ const EFFECT: Record<string, { label: string; className: string }> = {
   CONTEXT: { label: 'Context only', className: 'chip' },
 };
 
+/** Who is owed an answer, and whether it has come back. Built from the issues
+ *  themselves: a person holding an open issue is a person you are waiting on. */
+type Correspondent = {
+  person: RosterEntry;
+  issues: Issue[];
+  batches: FeedbackBatch[];
+  undecided: number;
+  sent: boolean;
+};
+
 function FeedbackDrawer({
   reviewId,
   feedback,
@@ -1380,10 +1390,63 @@ function FeedbackDrawer({
   onClose: () => void;
   onSelect: (issueId: string) => void;
 }) {
-  const [from, setFrom] = useState('');
-  const [text, setText] = useState('');
+  const [openKey, setOpenKey] = useState<string | null>(null);
+  const [drafts, setDrafts] = useState<Record<string, string>>({});
   const undecided = countUndecided(feedback);
-  const openIssues = issues.filter((issue) => issue.status === 'open').length;
+  const openIssues = issues.filter((issue) => issue.status === 'open');
+
+  /* The question the old drawer never answered: who have I not heard from?
+     It is answerable from what is already on screen — an open issue assigned
+     to someone is a question that person still owes an answer to. */
+  const correspondents = useMemo<Correspondent[]>(() => {
+    const selfId = roster.find((person) => person.isSelf)?.id ?? '';
+    const ids = [...new Set(openIssues.map((issue) => issue.assigneeId ?? ''))].filter(
+      (id) => id && id !== selfId,
+    );
+    return ids
+      .map((id) => {
+        const person = roster.find((entry) => entry.id === id);
+        if (!person) return null;
+        const mine = openIssues.filter((issue) => (issue.assigneeId ?? '') === id);
+        const batches = feedback.filter((batch) => batch.fromPersonId === id);
+        return {
+          person,
+          issues: mine,
+          batches,
+          undecided: countUndecided(batches),
+          sent: mine.some((issue) => issue.sentAt),
+        };
+      })
+      .filter((entry): entry is Correspondent => entry !== null)
+      .sort((a, b) => b.undecided - a.undecided || a.person.name.localeCompare(b.person.name));
+  }, [openIssues, roster, feedback]);
+
+  /* Anything pasted from outside the roster, and anything from someone who no
+     longer holds an open issue: it still has to be reachable. */
+  const known = new Set(correspondents.map((entry) => entry.person.id));
+  const loose = feedback.filter((batch) => !batch.fromPersonId || !known.has(batch.fromPersonId));
+
+  const answered = correspondents.filter((entry) => entry.batches.length > 0).length;
+  const waiting = correspondents.length - answered;
+
+  const submit = (key: string, fromPersonId: string | null) => {
+    const text = (drafts[key] ?? '').trim();
+    if (!text) return;
+    void act(() =>
+      send('POST', `/api/reviews/${reviewId}/feedback`, { text, fromPersonId }),
+    ).then((ok) => {
+      if (ok) setDrafts((current) => ({ ...current, [key]: '' }));
+    });
+  };
+
+  const summary =
+    undecided > 0
+      ? `${undecided} proposed ${undecided === 1 ? 'link' : 'links'} to decide`
+      : correspondents.length === 0
+        ? 'Nobody is waiting on an answer.'
+        : waiting === 0
+          ? 'Everyone has answered.'
+          : `${answered} of ${correspondents.length} answered · waiting on ${waiting}`;
 
   return (
     <>
@@ -1392,13 +1455,7 @@ function FeedbackDrawer({
         <header className="drawer-head">
           <div>
             <h2 className="drawer-title">Replies</h2>
-            <p className="drawer-sub">
-              {feedback.length === 0
-                ? `Paste what came back. The panel links it to the ${openIssues} open issues.`
-                : undecided > 0
-                  ? `${undecided} proposed links to decide`
-                  : 'Every link decided'}
-            </p>
+            <p className="drawer-sub">{summary}</p>
           </div>
           <button className="button icon" type="button" onClick={onClose} aria-label="Close">
             <Icon name="x" />
@@ -1406,126 +1463,151 @@ function FeedbackDrawer({
         </header>
 
         <div className="drawer-body">
-          {feedback.map((batch) => (
-            <section key={batch.id} className="detail-section">
-              <h3 className="detail-label">
-                From {batch.fromName}
-                <span className="detail-label-note">{formatWhen(batch.receivedAt)}</span>
-              </h3>
-              <blockquote className="pasted">{batch.text}</blockquote>
-
-              {batch.status === 'linking' && (
-                <p className="drawer-note">The panel is reading it against the open issues…</p>
-              )}
-              {batch.status === 'failed' && <div className="notice error">{batch.error}</div>}
-              {batch.status === 'ready' && batch.links.length === 0 && (
-                <p className="drawer-note">The panel found nothing in this reply that touches an open issue.</p>
-              )}
-
-              {batch.links.map((link) => {
-                const issue = issues.find((candidate) => candidate.id === link.issueId);
-                const effect = EFFECT[link.effect];
-                const decide = (decision: 'accept' | 'reject' | null) =>
-                  void act(() => send('PATCH', `/api/feedback-links/${link.id}`, { decision }));
-                return (
-                  <article key={link.id} className={link.decision ? `link-card ${link.decision}` : 'link-card'}>
-                    <div className="link-head">
-                      <span className={effect.className}>{effect.label}</span>
-                      {issue && (
-                        <button className="link-issue" type="button" onClick={() => onSelect(issue.id)}>
-                          {issue.ref}: {issue.statement}
-                        </button>
-                      )}
-                    </div>
-                    {link.quote && <blockquote className="link-quote">{link.quote}</blockquote>}
-                    <p className="link-reason">{link.reason}</p>
-                    <div className="link-foot">
-                      <span className="chip">{link.confidence} confidence</span>
-                      {link.decision ? (
-                        <span className={link.decision === 'accept' ? 'decided accepted' : 'decided rejected'}>
-                          <Icon name={link.decision === 'accept' ? 'check' : 'x'} />
-                          {link.decision === 'accept' ? 'Accepted' : 'Rejected'}
-                          <button
-                            className="link-undo"
-                            type="button"
-                            disabled={busy}
-                            onClick={() => decide(link.decision === 'accept' ? 'reject' : 'accept')}
-                          >
-                            change
-                          </button>
-                        </span>
-                      ) : (
-                        <span className="link-buttons">
-                          <button className="button small" type="button" disabled={busy} onClick={() => decide('reject')}>
-                            Reject
-                          </button>
-                          <button
-                            className="button primary small"
-                            type="button"
-                            disabled={busy}
-                            onClick={() => decide('accept')}
-                          >
-                            Accept
-                          </button>
-                        </span>
-                      )}
-                    </div>
-                  </article>
-                );
-              })}
-
-              <div className="inline-form-foot">
-                <button
-                  className="button subtle small"
-                  type="button"
-                  disabled={busy}
-                  onClick={() => void act(() => send('DELETE', `/api/reviews/${reviewId}/feedback/${batch.id}`))}
-                >
-                  Discard this reply
-                </button>
-              </div>
-            </section>
-          ))}
-
-          <section className="detail-section">
-            <h3 className="detail-label">Paste a reply</h3>
-            <Field label="Who wrote it">
-              <Select
-                value={from}
-                onChange={setFrom}
-                options={[
-                  { value: '', label: 'Not on the roster' },
-                  ...roster
-                    .filter((person) => !person.isSelf)
-                    .map((person) => ({ value: person.id, label: person.name })),
-                ]}
-              />
-            </Field>
-            <Field label="What they said" hint="Paste the message as it arrived. It is never sent anywhere.">
-              <textarea rows={6} value={text} onChange={(event) => setText(event.target.value)} />
-            </Field>
-            <div className="inline-form-foot">
-              {openIssues === 0 && <p className="foot-note">There are no open issues to link a reply to.</p>}
-              <button
-                className="button primary small"
-                type="button"
-                disabled={busy || !text.trim() || openIssues === 0}
-                onClick={() =>
-                  void act(() =>
-                    send('POST', `/api/reviews/${reviewId}/feedback`, {
-                      text: text.trim(),
-                      fromPersonId: from || null,
-                    }),
-                  ).then((ok) => ok && setText(''))
-                }
+          {correspondents.map((entry) => {
+            const key = entry.person.id;
+            const isOpen = openKey === key;
+            const draft = drafts[key] ?? '';
+            return (
+              <section
+                key={key}
+                className={entry.batches.length > 0 ? 'correspondent answered' : 'correspondent'}
               >
-                Link it to the open issues
-              </button>
-            </div>
+                <button
+                  className="correspondent-head"
+                  type="button"
+                  aria-expanded={isOpen}
+                  onClick={() => setOpenKey(isOpen ? null : key)}
+                >
+                  <span className="avatar">{initials(entry.person.name)}</span>
+                  <span className="correspondent-id">
+                    <span className="correspondent-name">{entry.person.name}</span>
+                    <span className="correspondent-org">{entry.person.org}</span>
+                  </span>
+                  <span className="correspondent-state">
+                    <span className="correspondent-refs tnum">
+                      {entry.issues.map((issue) => issue.ref).join(' · ')}
+                    </span>
+                    {entry.undecided > 0 ? (
+                      <span className="tag judgment">{entry.undecided} to decide</span>
+                    ) : entry.batches.length > 0 ? (
+                      <span className="correspondent-done">answered</span>
+                    ) : (
+                      <span className="correspondent-wait">{entry.sent ? 'awaiting reply' : 'not sent yet'}</span>
+                    )}
+                  </span>
+                  <Icon name="chevron" />
+                </button>
+
+                {isOpen && (
+                  <div className="correspondent-body">
+                    {entry.batches.map((batch) => (
+                      <FeedbackBatchCard
+                        key={batch.id}
+                        batch={batch}
+                        issues={issues}
+                        reviewId={reviewId}
+                        busy={busy}
+                        act={act}
+                        onSelect={onSelect}
+                      />
+                    ))}
+
+                    {/* Pasting into a person answers "who wrote it" by where it
+                        went, so the select that asked it is gone. */}
+                    <textarea
+                      className="paste-box"
+                      rows={5}
+                      value={draft}
+                      placeholder={`Paste ${entry.person.name.split(' ')[0]}'s reply as it arrived. It is never sent anywhere.`}
+                      onChange={(event) =>
+                        setDrafts((current) => ({ ...current, [key]: event.target.value }))
+                      }
+                    />
+                    <div className="inline-form-foot">
+                      <span className="drawer-note">
+                        The panel reads it against {entry.issues.length}{' '}
+                        {entry.issues.length === 1 ? 'issue' : 'issues'} and proposes the links.
+                      </span>
+                      <button
+                        className="button primary small"
+                        type="button"
+                        disabled={busy || !draft.trim()}
+                        onClick={() => submit(key, key)}
+                      >
+                        Read it against {entry.issues.length}
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </section>
+            );
+          })}
+
+          <section className={openKey === 'loose' ? 'correspondent open' : 'correspondent'}>
+            <button
+              className="correspondent-head"
+              type="button"
+              aria-expanded={openKey === 'loose'}
+              onClick={() => setOpenKey(openKey === 'loose' ? null : 'loose')}
+            >
+              <span className="avatar quiet">
+                <Icon name="inbox" />
+              </span>
+              <span className="correspondent-id">
+                <span className="correspondent-name">Someone else</span>
+                <span className="correspondent-org">A reply from outside the roster</span>
+              </span>
+              <span className="correspondent-state">
+                {loose.length > 0 && <span className="correspondent-done">{loose.length}</span>}
+              </span>
+              <Icon name="chevron" />
+            </button>
+
+            {openKey === 'loose' && (
+              <div className="correspondent-body">
+                {loose.map((batch) => (
+                  <FeedbackBatchCard
+                    key={batch.id}
+                    batch={batch}
+                    issues={issues}
+                    reviewId={reviewId}
+                    busy={busy}
+                    act={act}
+                    onSelect={onSelect}
+                  />
+                ))}
+
+                <textarea
+                  className="paste-box"
+                  rows={5}
+                  value={drafts.loose ?? ''}
+                  placeholder="Paste the reply as it arrived. It is never sent anywhere."
+                  onChange={(event) =>
+                    setDrafts((current) => ({ ...current, loose: event.target.value }))
+                  }
+                />
+                <div className="inline-form-foot">
+                  <span className="drawer-note">
+                    The panel reads it against all {openIssues.length} open{' '}
+                    {openIssues.length === 1 ? 'issue' : 'issues'}.
+                  </span>
+                  <button
+                    className="button primary small"
+                    type="button"
+                    disabled={busy || !(drafts.loose ?? '').trim() || openIssues.length === 0}
+                    onClick={() => submit('loose', null)}
+                  >
+                    Read it against {openIssues.length}
+                  </button>
+                </div>
+              </div>
+            )}
           </section>
         </div>
 
         <footer className="drawer-foot">
+          {/* A disabled button that will not say why is the thing people file
+              bugs about. It says why. */}
           <p className="drawer-note">
             {blockedReason !== ''
               ? blockedReason
@@ -1544,5 +1626,100 @@ function FeedbackDrawer({
         </footer>
       </aside>
     </>
+  );
+}
+
+/** One pasted reply and what the panel made of it. */
+function FeedbackBatchCard({
+  batch,
+  issues,
+  reviewId,
+  busy,
+  act,
+  onSelect,
+}: {
+  batch: FeedbackBatch;
+  issues: Issue[];
+  reviewId: string;
+  busy: boolean;
+  act: Act;
+  onSelect: (issueId: string) => void;
+}) {
+  return (
+    <article className="batch">
+      <div className="batch-head">
+        <span className="batch-when">{formatWhen(batch.receivedAt)}</span>
+        <button
+          className="button subtle small"
+          type="button"
+          disabled={busy}
+          onClick={() => void act(() => send('DELETE', `/api/reviews/${reviewId}/feedback/${batch.id}`))}
+        >
+          Discard
+        </button>
+      </div>
+
+      <blockquote className="pasted">{batch.text}</blockquote>
+
+      {batch.status === 'linking' && (
+        <p className="drawer-note">The panel is reading it against the open issues…</p>
+      )}
+      {batch.status === 'failed' && <div className="notice error">{batch.error}</div>}
+      {batch.status === 'ready' && batch.links.length === 0 && (
+        <p className="drawer-note">Nothing in this reply touches an open issue.</p>
+      )}
+
+      {batch.links.map((link) => {
+        const issue = issues.find((candidate) => candidate.id === link.issueId);
+        const effect = EFFECT[link.effect];
+        const decide = (decision: 'accept' | 'reject' | null) =>
+          void act(() => send('PATCH', `/api/feedback-links/${link.id}`, { decision }));
+        return (
+          <article key={link.id} className={link.decision ? `link-card ${link.decision}` : 'link-card'}>
+            <div className="link-head">
+              <span className={effect.className}>{effect.label}</span>
+              {issue && (
+                <button className="link-issue" type="button" onClick={() => onSelect(issue.id)}>
+                  {issue.ref}: {issue.statement}
+                </button>
+              )}
+            </div>
+            {link.quote && <blockquote className="link-quote">{link.quote}</blockquote>}
+            <p className="link-reason">{link.reason}</p>
+            <div className="link-foot">
+              <span className="chip">{link.confidence} confidence</span>
+              {link.decision ? (
+                <span className={link.decision === 'accept' ? 'decided accepted' : 'decided rejected'}>
+                  <Icon name={link.decision === 'accept' ? 'check' : 'x'} />
+                  {link.decision === 'accept' ? 'Accepted' : 'Rejected'}
+                  <button
+                    className="link-undo"
+                    type="button"
+                    disabled={busy}
+                    onClick={() => decide(link.decision === 'accept' ? 'reject' : 'accept')}
+                  >
+                    change
+                  </button>
+                </span>
+              ) : (
+                <span className="link-buttons">
+                  <button className="button small" type="button" disabled={busy} onClick={() => decide('reject')}>
+                    Reject
+                  </button>
+                  <button
+                    className="button primary small"
+                    type="button"
+                    disabled={busy}
+                    onClick={() => decide('accept')}
+                  >
+                    Accept
+                  </button>
+                </span>
+              )}
+            </div>
+          </article>
+        );
+      })}
+    </article>
   );
 }
