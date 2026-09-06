@@ -2,6 +2,8 @@
 
 English · [中文](README_CN.md)
 
+Demo Video: https://drive.google.com/file/d/1BCdqCo93CUHsjlARxEp0nIEO1vhcw6Hi/view?usp=sharing
+
 A fund manager sends a deliverable out for review and gets it back with comments.
 Then again. Then again. Ctrl+Y collapses that loop: a panel of agents reads the
 deliverable against its source documents, a consolidator merges what they found into
