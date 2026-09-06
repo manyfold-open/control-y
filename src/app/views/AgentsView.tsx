@@ -12,6 +12,7 @@ import { send } from '../api';
 import { errorText } from '../lib';
 import Icon from '../components/Icon';
 import Modal, { Field } from '../components/Modal';
+import Select from '../components/Select';
 
 const ROLE_BLURB: Record<AgentRole, string> = {
   reviewer: 'One job, one prompt. It reads the documents on its own and reports what it finds.',
@@ -51,7 +52,6 @@ export default function AgentsView({
     <button
       className="icon-button"
       type="button"
-      title="Edit"
       aria-label={`Edit ${agent.name}`}
       onClick={() => setEditing(agent)}
     >
@@ -63,7 +63,6 @@ export default function AgentsView({
     <button
       className={openKey === key ? 'icon-button open' : 'icon-button'}
       type="button"
-      title="Prompt"
       aria-expanded={openKey === key}
       aria-label={`${openKey === key ? 'Hide' : 'Show'} the prompt for ${name}`}
       onClick={() => setOpenKey(openKey === key ? null : key)}
@@ -78,8 +77,9 @@ export default function AgentsView({
         <div>
           <h1 className="page-title">Agents</h1>
           {workspace?.lastPass && (
-            <p className="page-scope" title="Every count below is from this pass">
-              <Icon name="reviews" size={14} /> Last pass · {workspace.lastPass.reviewName}
+            <p className="page-scope">
+              <Icon name="reviews" size={14} /> Every count below is from the last pass ·{' '}
+              {workspace.lastPass.reviewName}
             </p>
           )}
         </div>
@@ -192,32 +192,28 @@ function TargetPicker({
   if (connected.length === 0) return null;
 
   return (
-    <select
+    <Select
       className={stale ? 'agent-target stale' : 'agent-target'}
-      aria-label={`Which Manyfold agent ${agent.name} runs on`}
-      title={
-        stale
-          ? 'This Manyfold agent is no longer connected. This prompt will fail until you pick another.'
-          : 'Which connected Manyfold agent this prompt runs on.'
-      }
+      ariaLabel={`Which Manyfold agent ${agent.name} runs on`}
       disabled={busy}
       value={agent.agentId ?? ''}
-      onChange={(event) =>
-        void act(() =>
-          send('PATCH', `/api/panel-agents/${agent.key}`, { agentId: event.target.value || null }),
-        )
+      onChange={(value) =>
+        void act(() => send('PATCH', `/api/panel-agents/${agent.key}`, { agentId: value || null }))
       }
-    >
-      <option value="">Any connected agent</option>
-      {connected.map((entry) => (
-        <option key={entry.agentId} value={entry.agentId}>
-          {entry.name}
-        </option>
-      ))}
-      {stale && (
-        <option value={agent.agentId as string}>Disconnected agent — pick another</option>
-      )}
-    </select>
+      options={[
+        { value: '', label: 'Any connected agent' },
+        ...connected.map((entry) => ({ value: entry.agentId, label: entry.name })),
+        ...(stale
+          ? [
+              {
+                value: agent.agentId as string,
+                label: 'Disconnected agent',
+                note: 'This prompt will fail until you pick another.',
+              },
+            ]
+          : []),
+      ]}
+    />
   );
 }
 
@@ -250,7 +246,7 @@ function Singleton({
           </div>
           <div className="agent-row-controls">
             <TargetPicker agent={agent} workspace={workspace} busy={busy} act={act} />
-            <button className="icon-button" type="button" title="Edit" aria-label={`Edit ${agent.name}`} onClick={onEdit}>
+            <button className="icon-button" type="button" aria-label={`Edit ${agent.name}`} onClick={onEdit}>
               <Icon name="edit" />
             </button>
             {toggle(agent.key, agent.name)}

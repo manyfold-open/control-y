@@ -1,0 +1,35 @@
+# The two checks AGENTS.md asks for before anything is pushed, run on every pull
+# request and on main.
+#
+# Deployment is not here. This repo is wired to Cloudflare Workers Builds, which
+# redeploys on push to main by itself; a second deploy path in Actions would race
+# it and neither would know the other had run.
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      # tsc, the client and worker builds, and `wrangler deploy --dry-run`, which
+      # validates wrangler.jsonc and every binding without contacting Cloudflare.
+      - run: npm run check
+
+      - run: npm test

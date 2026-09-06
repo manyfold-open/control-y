@@ -313,9 +313,10 @@ p { margin: 0; }
 .page-note b { color: var(--steel); font-weight: 600; }
 
 .section-title { font: 600 14px/1.4 var(--font-sans); }
-/* A kind's definition is a tooltip here and a subtitle in the dialog that
-   authors it, which is where it is actually needed. */
-h2.section-title[title] { cursor: help; }
+/* A kind's definition is read far more often than it is authored, so it sits on
+   the page under its heading rather than inside a tooltip nobody opens. */
+.memory-section-head { display: grid; gap: var(--space-xxs); margin-bottom: var(--space-xs); }
+.section-blurb { color: var(--stone); font-size: 12px; line-height: 1.5; max-width: 68ch; }
 .empty-note { padding: var(--space-xxxl); color: var(--stone); font-size: 14px; text-align: center; }
 
 /* Section label. Sentence case: seven stacked ALL-CAPS labels down one column
@@ -517,6 +518,53 @@ h2.section-title[title] { cursor: help; }
 
 .switch.on .switch-thumb { transform: translateX(16px); }
 
+/* ═══ Select ════════════════════════════════════════════════════════════════
+   A native <select> paints its list with the operating system, so it is the one
+   control on these pages that ignores everything above. This is the same list
+   painted here: a trigger shaped like a button, a popup shaped like
+   `.table-card`, rows that behave like the rest of the app's rows.
+
+   It sits before `.agent-target` and `.agent-picker` on purpose, so those two
+   override it at equal specificity. */
+
+.select-trigger {
+  display: inline-flex; align-items: center; justify-content: space-between;
+  gap: var(--space-xs);
+  min-height: 36px; padding: var(--space-xs) var(--space-sm);
+  border: 1px solid var(--hairline); border-radius: var(--rounded-md);
+  background: var(--canvas); color: var(--ink);
+  font: 400 14px/1.5 var(--font-sans); text-align: left; cursor: pointer;
+}
+.select-trigger:hover:not(:disabled) { border-color: var(--steel); }
+.select-trigger:disabled { cursor: default; opacity: 0.6; }
+.select-trigger:focus-visible { outline: none; border-color: var(--focus); box-shadow: 0 0 0 1px var(--focus); }
+.select-trigger[aria-expanded='true'] { border-color: var(--focus); box-shadow: 0 0 0 1px var(--focus); }
+.select-trigger > .icon { color: var(--stone); }
+
+.select-value { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.select-value.empty { color: var(--stone); }
+
+/* Portaled to <body> and positioned fixed, because every place this is used
+   sits inside a scrolling box that would clip it. */
+.select-list {
+  position: fixed; z-index: 60;
+  max-width: min(420px, calc(100vw - 24px)); max-height: 260px; overflow-y: auto;
+  padding: var(--space-xxs);
+  border: 1px solid var(--hairline); border-radius: var(--rounded-md);
+  background: var(--canvas); box-shadow: var(--elev-2);
+}
+
+.select-option {
+  display: flex; align-items: center; justify-content: space-between; gap: var(--space-sm);
+  padding: 7px var(--space-xs); border-radius: var(--rounded-sm);
+  color: var(--charcoal); font: 400 14px/1.4 var(--font-sans); cursor: pointer;
+}
+.select-option.active { background: color-mix(in srgb, var(--ink) 5%, transparent); color: var(--ink); }
+.select-option.off { color: var(--muted-ink); cursor: default; }
+.select-option > .icon { flex: none; color: var(--settled); }
+.select-option-text { display: grid; min-width: 0; }
+.select-option-text small { color: var(--stone); font-size: 12px; }
+
 /* ═══ Data list ═════════════════════════════════════════════════════════════
    One bounded surface with hairline-separated rows. Used for reviews, people,
    memory and agents — four screens, one table vocabulary. */
@@ -657,7 +705,15 @@ h2.section-title[title] { cursor: help; }
 .crumb-sep { color: var(--muted-ink); }
 
 .review-title { font: 600 20px/1.3 var(--font-sans); letter-spacing: -0.3px; }
-.review-actions { display: flex; gap: var(--space-xs); }
+.review-actions { display: flex; justify-content: flex-end; gap: var(--space-xs); flex-wrap: wrap; }
+/* Why the run button is dead, said on the page. A `title` cannot say it: a
+   disabled control never fires one, so the reason was unreachable exactly when
+   it was needed. */
+.blocked-note {
+  flex-basis: 100%;
+  max-width: 44ch; margin-left: auto;
+  color: var(--stone); font-size: 12px; line-height: 1.5; text-align: right;
+}
 
 .review-summary {
   display: flex; align-items: baseline; gap: var(--space-sm);
@@ -831,13 +887,13 @@ h2.section-title[title] { cursor: help; }
   background: var(--surface-soft);
 }
 
+/* Carries the app's own switch, not a native checkbox: a checkbox is painted by
+   the operating system and is the same decision as the one in `.switch` anyway. */
 .sent-check {
   display: inline-flex; align-items: center; gap: var(--space-xs);
   margin-left: auto;
-  color: var(--steel); font-size: 13px; cursor: pointer;
+  color: var(--steel); font-size: 13px;
 }
-
-.sent-check input { width: 15px; height: 15px; min-height: 0; padding: 0; accent-color: var(--primary); }
 
 /* ═══ Callouts ══════════════════════════════════════════════════════════════
    A bounded note, hairline and a faint wash. The label carries the role colour;
@@ -924,9 +980,12 @@ code {
 }
 
 /* A pointer into a file is an identifier, so it takes the mono. */
+/* Wraps rather than truncates. A locator is the one string on the page you have
+   to read in full to go and find the thing, and the ellipsis was hiding its tail
+   behind a tooltip. */
 .evidence-locator {
   min-width: 0;
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  overflow-wrap: anywhere;
   color: var(--steel);
   font: 400 12px/1.4 var(--font-mono);
 }
@@ -1151,13 +1210,14 @@ code {
 /* Reads as a label until you reach for it — the default ("any") is the common
    case, and a full form control on every row would shout over the prompts. */
 .agent-target {
-  max-width: 190px;
+  max-width: 190px; min-height: 0;
   padding: 2px var(--space-xs);
-  border: 1px solid transparent; border-radius: var(--radius-sm);
+  border: 1px solid transparent; border-radius: var(--rounded-sm);
   background: none; color: var(--stone);
   font: 400 12px/1.4 var(--font-sans); cursor: pointer;
 }
-.agent-target:hover { border-color: var(--hairline); color: var(--ink); }
+/* Matches `.select-trigger:hover`'s specificity, so the quiet border wins here. */
+.agent-target:hover:not(:disabled) { border-color: var(--hairline); color: var(--ink); }
 .agent-target:disabled { cursor: default; opacity: 0.6; }
 .agent-target.stale { color: var(--material); border-color: color-mix(in srgb, var(--material) 40%, transparent); }
 
@@ -1204,8 +1264,10 @@ code {
    wrapping the only thing on the screen. */
 .panel { background: none; border: 0; padding: 0; }
 .panel h2 { margin: 0 0 var(--space-xxs); font: 600 16px/1.4 var(--font-sans); }
-.panel h3 { margin: var(--space-lg) 0 var(--space-xxs); font: 600 14px/1.4 var(--font-sans); }
-.panel p, .muted { color: var(--steel); }
+.panel h3 { margin: var(--space-xxl) 0 var(--space-xs); font: 600 14px/1.4 var(--font-sans); }
+/* Panel prose runs at the page's full width without this. A measure and a looser
+   line are what separate an explanation from the control it explains. */
+.panel p, .muted { color: var(--steel); max-width: 68ch; line-height: 1.6; }
 .small { font-size: 13px; }
 .center { text-align: center; }
 .warn { color: var(--judgment); font-style: normal; }
@@ -1250,7 +1312,18 @@ input:focus-visible, textarea:focus-visible, select:focus-visible {
 .composer { display: grid; grid-template-columns: 1fr auto; gap: var(--space-xs); align-items: end; }
 .composer textarea { resize: vertical; min-height: 60px; }
 
-.connect-panel { display: grid; gap: var(--space-sm); justify-items: start; }
+/* The connect block is the last thing on this page and the only action on it, so
+   it gets a rule of its own rather than trailing off the agent card above. */
+.connect-more {
+  margin-top: var(--space-xxl); padding-top: var(--space-lg);
+  border-top: 1px solid var(--hairline);
+}
+.connect-more h3 { margin: 0 0 var(--space-xs); }
+
+/* The button is ranked between two texts, so it needs air above it and a caption
+   below it that is visibly lighter than the copy above. */
+.connect-panel { display: grid; gap: var(--space-sm); justify-items: start; margin-top: var(--space-md); }
+.connect-hint { max-width: 68ch; color: var(--stone); font-size: 12px; line-height: 1.6; }
 .connect-waiting { display: grid; gap: var(--space-xs); border: 1px dashed var(--hairline); border-radius: var(--rounded-lg); padding: var(--space-md); width: 100%; }
 .connect-code { display: grid; justify-items: center; gap: 2px; background: var(--surface); border-radius: var(--rounded-md); padding: var(--space-sm); }
 .connect-code small { color: var(--steel); font: 600 12px/1.4 var(--font-sans); }
@@ -1258,6 +1331,11 @@ input:focus-visible, textarea:focus-visible, select:focus-visible {
 .connect-result { display: grid; gap: var(--space-xxs); }
 .connect-result-row { display: flex; gap: var(--space-xs); align-items: baseline; }
 .connect-result-row.failed span { color: var(--material); }
+/* An icon dropped into a run of text sits on the line box, not on the text's
+   baseline. Pull it down so it reads as punctuation rather than as a stray badge. */
+.warn > .icon, .connect-result-row > .icon { vertical-align: -3px; }
+.connect-result-row > .icon { color: var(--settled); }
+.connect-result-row.failed > .icon { color: var(--material); }
 
 .agent-list { display: grid; gap: var(--space-xs); }
 .agent-card { display: flex; gap: var(--space-sm); justify-content: space-between; align-items: flex-start; flex-wrap: wrap; border: 1px solid var(--hairline); border-radius: var(--rounded-lg); padding: var(--space-md); }
@@ -1306,7 +1384,7 @@ input:focus-visible, textarea:focus-visible, select:focus-visible {
 .field { display: grid; gap: var(--space-xxs); min-width: 0; }
 .field-label { color: var(--steel); font: 500 13px/1.4 var(--font-sans); }
 .field-hint { color: var(--stone); font-size: 12px; line-height: 1.5; }
-.field input, .field textarea, .field select { width: 100%; }
+.field input, .field textarea, .field select, .field .select-trigger { width: 100%; }
 .field textarea { resize: vertical; }
 
 .inline-form {
@@ -1318,6 +1396,9 @@ input:focus-visible, textarea:focus-visible, select:focus-visible {
   display: flex; align-items: center; justify-content: flex-end;
   gap: var(--space-xs); flex-wrap: wrap;
 }
+/* Says why a button next to it is disabled. `title` cannot: browsers never fire
+   a tooltip on a disabled control, so that text was unreachable. */
+.foot-note { flex: 1 1 220px; min-width: 0; color: var(--stone); font-size: 12px; line-height: 1.5; }
 
 .detail-actions {
   display: flex; gap: var(--space-xs); flex-wrap: wrap;

@@ -102,7 +102,7 @@ export const evidenceText = (evidence: Evidence): string =>
   [
     evidence.quote,
     ...evidence.rows.map((row) =>
-      [row.field, row.value, row.note && `— ${row.note}`].filter(Boolean).join('  '),
+      [row.field, row.value, row.note && `· ${row.note}`].filter(Boolean).join('  '),
     ),
   ]
     .filter(Boolean)

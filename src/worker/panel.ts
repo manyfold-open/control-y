@@ -269,7 +269,7 @@ function documentsBlock(docs: PanelDocument[]): string {
       }
       const room = Math.min(DOC_CHARS_EACH, budget);
       budget -= room;
-      if (room <= 0) return `### ${doc.name}\n[not included — document budget reached]`;
+      if (room <= 0) return `### ${doc.name}\n[not included: document budget reached]`;
       const body =
         doc.content.length > room ? `${doc.content.slice(0, room)}\n[truncated]` : doc.content;
       return `### ${doc.name}\n${body}`;
@@ -287,6 +287,15 @@ interface PassContext {
 
 const JSON_ONLY = 'Reply with JSON and nothing else. No preamble, no explanation, no code fence.';
 
+/**
+ * Every prose field a prompt returns is rendered verbatim in the app, so the
+ * house style has to reach the model. Stripping em dashes on the way out would
+ * mean rewriting a sentence the model built around one; asking for the sentence
+ * it would have written instead costs a line.
+ */
+const HOUSE_STYLE =
+  'House style: never use an em dash in any string you return. Use a comma, a colon, or a new sentence instead.';
+
 export function buildAgentPrompt(agentPrompt: string, ctx: PassContext): string {
   return [
     agentPrompt,
@@ -298,8 +307,9 @@ export function buildAgentPrompt(agentPrompt: string, ctx: PassContext): string 
     ctx.replies,
     '───────────────────────────────────────',
     `${JSON_ONLY}
+${HOUSE_STYLE}
 
-{"findings":[{"location":"where in the deliverable, e.g. staging!row 47","severity":"material|presentational|question","statement":"one sentence saying what is wrong","whyItMatters":"why it matters to the fund manager","evidence":{"label":"file and location","quote":"a passage quoted from the document, when the proof is prose — otherwise null","rows":[{"field":"the field or line item","value":"what it holds, exactly as the document has it","note":"what does not resolve about it, or null"}]}}]}
+{"findings":[{"location":"where in the deliverable, e.g. staging!row 47","severity":"material|presentational|question","statement":"one sentence saying what is wrong","whyItMatters":"why it matters to the fund manager","evidence":{"label":"file and location","quote":"a passage quoted from the document, when the proof is prose, otherwise null","rows":[{"field":"the field or line item","value":"what it holds, exactly as the document has it","note":"what does not resolve about it, or null"}]}}]}
 
 Return {"findings":[]} when you find nothing. Nothing found is a real result and is worth stating.
 Raise only what you can anchor to the documents above.`,
@@ -318,15 +328,16 @@ export function buildConsolidatorPrompt(
     consolidatorPrompt,
     '───────────────────────────────────────',
     ctx.header,
-    `THE REVIEW ROSTER — assign every issue to exactly one of these ids\n${roster}`,
+    `THE REVIEW ROSTER: assign every issue to exactly one of these ids\n${roster}`,
     ctx.memory,
     ctx.carried,
     ctx.replies,
     `WHAT THE PANEL FOUND\n${findings}`,
     '───────────────────────────────────────',
     `${JSON_ONLY}
+${HOUSE_STYLE}
 
-{"issues":[{"ref":"the ref of an issue carried in, or null when new","status":"open|resolved|dismissed","severity":"material|presentational|question","location":"where in the deliverable","statement":"one sentence saying what is wrong","whyItMatters":"why it matters","raisedBy":["the exact name of each agent that found it"],"assigneeId":"an id from the roster","assigneeReason":"why this person and not another, in one sentence","flags":["new","revised","contradicts"],"evidence":{"label":"...","quote":"...","rows":[{"field":"...","value":"...","note":"..."}]},"memory":{"entryId":"the id of the memory entry that changed this issue","effect":"what it changed, in one line"},"conflict":{"positions":[{"agent":"name","verdict":"its position"}],"ruling":"your ruling and why"},"draft":"the message to send to the assignee, signed by nobody","resolution":"how it was settled — only when status is resolved"}]}
+{"issues":[{"ref":"the ref of an issue carried in, or null when new","status":"open|resolved|dismissed","severity":"material|presentational|question","location":"where in the deliverable","statement":"one sentence saying what is wrong","whyItMatters":"why it matters","raisedBy":["the exact name of each agent that found it"],"assigneeId":"an id from the roster","assigneeReason":"why this person and not another, in one sentence","flags":["new","revised","contradicts"],"evidence":{"label":"...","quote":"...","rows":[{"field":"...","value":"...","note":"..."}]},"memory":{"entryId":"the id of the memory entry that changed this issue","effect":"what it changed, in one line"},"conflict":{"positions":[{"agent":"name","verdict":"its position"}],"ruling":"your ruling and why"},"draft":"the message to send to the assignee, signed by nobody","resolution":"how it was settled, only when status is resolved"}]}
 
 Rules:
 - Return EVERY issue carried in above, with its status updated by the replies, AND every new issue. Keep the ref of a carried issue exactly. Use null for the ref of a new one.
@@ -592,9 +603,9 @@ async function runPass(
   );
 
   const ctx: PassContext = {
-    header: `THE REVIEW\n${review.name} — prepared by ${review.counterparty || 'a third party'} — ${review.period || 'no period stated'}`,
+    header: `THE REVIEW\n${review.name} · prepared by ${review.counterparty || 'a third party'} · ${review.period || 'no period stated'}`,
     memory: applied.length
-      ? `WHAT THIS WORKSPACE ALREADY KNOWS — apply every line\n${bullet(
+      ? `WHAT THIS WORKSPACE ALREADY KNOWS, apply every line\n${bullet(
           applied.map((entry) => `[${entry.id}] [${entry.kind}] ${entry.text}`),
         )}`
       : '',
@@ -608,10 +619,10 @@ async function runPass(
         )}`
       : '',
     replies: acceptedLinks.length
-      ? `REPLIES RECEIVED SINCE THE LAST PASS — the fund manager has accepted each of these links\n${bullet(
+      ? `REPLIES RECEIVED SINCE THE LAST PASS, the fund manager has accepted each of these links\n${bullet(
           acceptedLinks.map(
             ({ batch, link, issue }) =>
-              `${link.effect} on ${issue?.ref ?? 'an issue'} — ${batch.fromName} wrote: "${link.quote}" — ${link.reason}`,
+              `${link.effect} on ${issue?.ref ?? 'an issue'} · ${batch.fromName} wrote: "${link.quote}" · ${link.reason}`,
           ),
         )}`
       : '',
@@ -696,7 +707,7 @@ async function runPass(
   const rosterBlock = bullet(
     roster.map(
       (person) =>
-        `${person.id} — ${person.name}${person.isSelf ? ' (the fund manager, who signs in)' : ''}, ${person.org || 'no organisation'} — title on this review: ${person.reviewTitle || 'none recorded'} — directory role: ${person.role || 'none'}`,
+        `${person.id} · ${person.name}${person.isSelf ? ' (the fund manager, who signs in)' : ''}, ${person.org || 'no organisation'} · title on this review: ${person.reviewTitle || 'none recorded'} · directory role: ${person.role || 'none'}`,
     ),
   );
 
@@ -818,6 +829,7 @@ export function buildRetrospectivePrompt(agentPrompt: string, ctx: Retrospective
     ctx.replies,
     '───────────────────────────────────────',
     `${JSON_ONLY}
+${HOUSE_STYLE}
 
 {"summary":"how this review went, in a short paragraph addressed to the fund manager","wentWell":["something the panel got right, one line each"],"toChange":["something to do differently next period, one line each"],"lessons":[{"kind":"Treatment|Pattern|Instruction|Fact","text":"the rule, phrased so the panel can apply it next period","basis":["the refs of the issues this is drawn from"]}]}
 
@@ -894,12 +906,12 @@ async function runRetrospective(env: Env, id: string, reviewId: string): Promise
   const done = passes.filter((pass) => pass.status === 'done');
 
   const ctx: RetrospectiveContext = {
-    header: `THE REVIEW, NOW CLOSED\n${review.name} — prepared by ${review.counterparty || 'a third party'} — ${review.period || 'no period stated'}`,
+    header: `THE REVIEW, NOW CLOSED\n${review.name} · prepared by ${review.counterparty || 'a third party'} · ${review.period || 'no period stated'}`,
     history: done.length
-      ? `HOW IT CONVERGED — open issues after each pass\n${bullet(
+      ? `HOW IT CONVERGED, open issues after each pass\n${bullet(
           done.map(
             (pass) =>
-              `pass ${pass.number}: ${pass.openCount ?? 0} open — ${pass.agents
+              `pass ${pass.number}: ${pass.openCount ?? 0} open · ${pass.agents
                 .map((result) => `${result.name}: ${result.error ? 'did not answer' : `${result.findings} findings`}`)
                 .join(', ')}`,
           ),
@@ -919,7 +931,7 @@ async function runRetrospective(env: Env, id: string, reviewId: string): Promise
       ),
     )}`,
     known: memory.filter((entry) => entry.enabled).length
-      ? `WHAT THIS WORKSPACE ALREADY KNOWS — do not propose these again\n${bullet(
+      ? `WHAT THIS WORKSPACE ALREADY KNOWS, do not propose these again\n${bullet(
           memory.filter((entry) => entry.enabled).map((entry) => `[${entry.kind}] ${entry.text}`),
         )}`
       : '',
@@ -1013,10 +1025,11 @@ export async function linkFeedback(env: Env, reviewId: string, batchId: string):
       consolidator.prompt,
       '───────────────────────────────────────',
       `A reply arrived from ${batch.fromName}. Say which open issues it touches, and how.`,
-      `OPEN ISSUES\n${bullet(open.map((issue) => `${issue.ref} — ${issue.statement}`))}`,
+      `OPEN ISSUES\n${bullet(open.map((issue) => `${issue.ref}: ${issue.statement}`))}`,
       `THE REPLY, VERBATIM\n"""\n${batch.text.slice(0, 20_000)}\n"""`,
       '───────────────────────────────────────',
       `${JSON_ONLY}
+${HOUSE_STYLE}
 
 {"links":[{"ref":"TZ-047","effect":"RESOLVES|PARTIAL|CONTRADICTS|CONTEXT","quote":"the sentence from the reply, copied exactly","reason":"why it has that effect on that issue","confidence":"high|medium|low"}]}
 

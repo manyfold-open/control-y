@@ -100,7 +100,7 @@ describe('evidenceText', () => {
     })!;
 
     expect(evidenceText(evidence)).toBe(
-      'the Management Fee shall not exceed 1.25%\nQ1 2026 accrual  1.50% per annum  — 25 bps above the cap',
+      'the Management Fee shall not exceed 1.25%\nQ1 2026 accrual  1.50% per annum  · 25 bps above the cap',
     );
   });
 });

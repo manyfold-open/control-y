@@ -11,6 +11,7 @@
 import { useEffect, useRef, useState } from 'react';
 import type { ConnectSession, PollOutcome } from '../../shared/types';
 import { api } from '../api';
+import Icon from './Icon';
 
 export default function ConnectPanel(props: {
   /** In-flight handshake recovered from /api/state, so a reload resumes it. */
@@ -26,7 +27,7 @@ export default function ConnectPanel(props: {
   const openConsent = (url: string) => {
     popup.current = window.open(url, 'manyfold-connect', 'width=520,height=760,noopener,noreferrer');
     if (!popup.current) {
-      setError('The popup was blocked — use "Reopen the authorization page" below.');
+      setError('The popup was blocked. Use "Reopen the authorization page" below.');
     }
   };
 
@@ -100,7 +101,7 @@ export default function ConnectPanel(props: {
             <strong>{session.userCode}</strong>
           </div>
           <p className="muted">
-            Check that the Manyfold page shows this exact code before approving — that is how you
+            Check that the Manyfold page shows this exact code before approving. That is how you
             know you are authorizing <em>this</em> app.
           </p>
           <p className="muted">Waiting for you to approve on Manyfold…</p>
@@ -117,7 +118,7 @@ export default function ConnectPanel(props: {
 
       {result?.status === 'denied' && <div className="notice error">You declined the request on Manyfold.</div>}
       {result?.status === 'expired' && (
-        <div className="notice error">That authorization expired — start again.</div>
+        <div className="notice error">That authorization expired. Start again.</div>
       )}
       {result?.status === 'approved' && (
         <div className="connect-result">
@@ -128,15 +129,17 @@ export default function ConnectPanel(props: {
           </strong>
           {(result.agents ?? []).map((agent) => (
             <div className="connect-result-row" key={agent.agentId}>
-              <span>✓ {agent.name}</span>
+              <Icon name="check" size={14} />
+              <span>{agent.name}</span>
               {!agent.verified && (
-                <em className="warn">unverified{agent.warning ? ` — ${agent.warning}` : ''}</em>
+                <em className="warn">unverified{agent.warning ? `: ${agent.warning}` : ''}</em>
               )}
             </div>
           ))}
           {(result.failed ?? []).map((entry) => (
             <div className="connect-result-row failed" key={entry.name}>
-              <span>✗ {entry.name}</span>
+              <Icon name="x" size={14} />
+              <span>{entry.name}</span>
               <em className="warn">{entry.error}</em>
             </div>
           ))}

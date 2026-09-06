@@ -24,7 +24,7 @@ export default function RetrospectivePanel({
   if (retro.status === 'running') {
     return (
       <div className="notice">
-        Looking back over the review — every pass, every issue, and how each one was settled. The rules it proposes will
+        Looking back over the review: every pass, every issue, and how each one was settled. The rules it proposes will
         appear here.
       </div>
     );
@@ -96,7 +96,7 @@ export default function RetrospectivePanel({
               </p>
               <div className="memory-foot">
                 <span className="memory-source">
-                  {entry ? `From ${lesson.basis.join(', ')}` : 'Could not be written to memory — copy it by hand.'}
+                  {entry ? `From ${lesson.basis.join(', ')}` : 'Could not be written to memory. Copy it by hand.'}
                 </span>
                 {entry && (
                   <div className="memory-switches">
@@ -105,7 +105,7 @@ export default function RetrospectivePanel({
                       type="button"
                       role="switch"
                       aria-checked={enabled}
-                      aria-label={`Carry this rule into future reviews — ${lesson.text}`}
+                      aria-label={`Carry this rule into future reviews: ${lesson.text}`}
                       className={enabled ? 'switch on' : 'switch'}
                       disabled={busy}
                       onClick={() =>

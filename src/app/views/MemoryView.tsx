@@ -3,8 +3,8 @@
  *
  * An entry applies when it is switched on AND in scope on the review being run,
  * so both are controls here. The review they are scoped to is named once in the
- * page header rather than on every row, and each kind's definition is a tooltip
- * here and a subtitle in the dialog that authors it.
+ * page header rather than on every row, and each kind's definition sits under its
+ * heading, where it is read, as well as in the dialog that authors it.
  */
 
 import { useState } from 'react';
@@ -13,6 +13,7 @@ import { send } from '../api';
 import { errorText, formatDay, useResource } from '../lib';
 import Icon from '../components/Icon';
 import Modal, { Field } from '../components/Modal';
+import Select from '../components/Select';
 
 const ORDER: MemoryKind[] = ['Treatment', 'Pattern', 'Instruction', 'Fact'];
 
@@ -64,8 +65,8 @@ export default function MemoryView({
         <div>
           <h1 className="page-title">Memory</h1>
           {review && (
-            <p className="page-scope" title={`Scope targets on this page apply to ${review.name}`}>
-              <Icon name="scope" size={14} /> {review.name}
+            <p className="page-scope">
+              <Icon name="scope" size={14} /> Scope targets on this page apply to {review.name}
             </p>
           )}
         </div>
@@ -85,9 +86,10 @@ export default function MemoryView({
         if (group.length === 0) return null;
         return (
           <section key={kind} className="memory-section">
-            <h2 className="section-title" title={BLURB[kind]}>
-              {kind}
-            </h2>
+            <div className="memory-section-head">
+              <h2 className="section-title">{kind}</h2>
+              <p className="section-blurb">{BLURB[kind]}</p>
+            </div>
 
             <div className="table-card">
               {group.map((entry) => {
@@ -109,7 +111,6 @@ export default function MemoryView({
                             aria-label={`${inScope ? 'In' : 'Out of'} scope on ${review.name}`}
                             className={inScope ? 'scope-toggle on' : 'scope-toggle'}
                             disabled={busy}
-                            title={`${inScope ? 'In' : 'Out of'} scope on ${review.name}. Click to switch.`}
                             onClick={() =>
                               void act(() =>
                                 send('PUT', `/api/reviews/${review.id}/memory/${entry.id}`, { inScope: !inScope }),
@@ -125,7 +126,7 @@ export default function MemoryView({
                           type="button"
                           role="switch"
                           aria-checked={entry.enabled}
-                          aria-label={`Use this entry — ${entry.text}`}
+                          aria-label={`Use this entry: ${entry.text}`}
                           className={entry.enabled ? 'switch on' : 'switch'}
                           disabled={busy}
                           onClick={() =>
@@ -186,20 +187,18 @@ function EntryDialog({
     >
       <div className="dialog-form">
         <Field label="Kind">
-          <select value={kind} onChange={(event) => setKind(event.target.value as MemoryKind)}>
-            {ORDER.map((value) => (
-              <option key={value} value={value}>
-                {value}
-              </option>
-            ))}
-          </select>
+          <Select
+            value={kind}
+            onChange={(next) => setKind(next as MemoryKind)}
+            options={ORDER.map((value) => ({ value, label: value, note: BLURB[value] }))}
+          />
         </Field>
         <Field label="The rule" hint="One sentence, phrased as a rule the panel can apply.">
           <textarea
             rows={4}
             value={text}
             onChange={(event) => setText(event.target.value)}
-            placeholder="Bank charges carry no counterparty by convention — do not raise them as unmatched."
+            placeholder="Bank charges carry no counterparty by convention, so do not raise them as unmatched."
           />
         </Field>
         {entry && <p className="dialog-note">From {entry.source} · {formatDay(entry.createdAt)}</p>}

@@ -510,7 +510,7 @@ ctrlY.post('/reviews/:id/feedback', async (c) => {
     throw new HttpError(
       400,
       'no_agent',
-      'Connect a Manyfold agent under Connections before pasting replies — the panel links them.',
+      'Connect a Manyfold agent under Connections before pasting replies: the panel links them.',
     );
   }
   const batchId = await store.createFeedbackBatch(c.env, reviewId, {

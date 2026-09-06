@@ -37,7 +37,7 @@ const PEOPLE = [
 ] as const;
 
 const ROSTER: [string, string][] = [
-  ['p-self', 'Allocations and meeting purpose — cannot be delegated'],
+  ['p-self', 'Allocations and meeting purpose: cannot be delegated'],
   ['p-roos', 'Prepared the Q1 journal batch'],
   ['p-halvorsen', 'Ran the Sardonyx and Fenwick closings'],
   ['p-lind', 'Escalation point at Meridian'],
@@ -66,14 +66,14 @@ const AGENTS = [
     name: 'Rolled-forward text',
     purpose: 'Finds narrative carried over from the prior period with only the date advanced.',
     prompt:
-      'Compare every narrative section against the equivalent section in the prior period.\n\nFlag sections where the date has been advanced but the substance is unchanged. Report nothing if the deliverable contains no narrative sections — that is a valid and useful result.',
+      'Compare every narrative section against the equivalent section in the prior period.\n\nFlag sections where the date has been advanced but the substance is unchanged. Report nothing if the deliverable contains no narrative sections. That is a valid and useful result.',
   },
   {
     key: 'reference-data',
     name: 'Unresolved reference data',
     purpose: 'Resolves every counterparty, project code, deal and investor against the master lists.',
     prompt:
-      'Resolve every reference in the deliverable against the master lists supplied with it.\n\nReport unresolved references grouped by kind, with counts and row ranges. Rows the preparer has already flagged for review are still findings — a flag is not a decision.',
+      'Resolve every reference in the deliverable against the master lists supplied with it.\n\nReport unresolved references grouped by kind, with counts and row ranges. Rows the preparer has already flagged for review are still findings: a flag is not a decision.',
   },
 ];
 
@@ -82,14 +82,14 @@ const CEPHALUS = {
   name: 'Cephalus allocation watch',
   purpose: 'Your own agent. Watches every expense for a missing or stale allocation.',
   prompt:
-    'Every expense row must carry an allocation. Treat a missing allocation as material regardless of the amount, and route it to me — allocation decisions do not leave my desk.\n\nThe Cephalus allocation rule changed on 1 March 2026. Any allocation struck after that date under the prior rule is material.',
+    'Every expense row must carry an allocation. Treat a missing allocation as material regardless of the amount, and route it to me. Allocation decisions do not leave my desk.\n\nThe Cephalus allocation rule changed on 1 March 2026. Any allocation struck after that date under the prior rule is material.',
 };
 
 const CONSOLIDATOR_PROMPT =
   'You receive the findings of every enabled agent.\n\nMerge findings that describe the same row or section into one issue citing both agents. Rank corroborated findings above single-agent findings of the same severity. Where agents disagree, keep the issue, take the higher severity, and state the disagreement and your ruling.\n\nAssign each issue using the review roster and each person’s title FOR THIS REVIEW, not their directory role. "You" is a legitimate assignee.\n\nMy own instructions override a built-in agent’s judgement.';
 
 const RETROSPECTIVE_PROMPT =
-  'A review has been closed. You are looking back at the whole of it — every pass, every issue, how each one was settled, and what the replies said.\n\nWrite the close-out for the fund manager: what this review actually cost, where the panel earned its keep, and where it wasted his time. Be specific and be blunt. An issue the panel raised three times and was wrong about three times is worth saying out loud.\n\nThen propose the rules worth carrying into the next period. A good rule is one that would have changed how this review ran: a treatment already agreed with the counterparty so it stops being re-raised, a defect that recurs so the panel looks there first, a standing instruction of the fund manager’s, or a fact about the fund the deliverable keeps getting wrong.\n\nPropose nothing you cannot tie to a specific issue in this review. A rule drawn from one ambiguous issue is worse than no rule — it will be applied to every future review. Fewer and sharper beats more.';
+  'A review has been closed. You are looking back at the whole of it: every pass, every issue, how each one was settled, and what the replies said.\n\nWrite the close-out for the fund manager: what this review actually cost, where the panel earned its keep, and where it wasted his time. Be specific and be blunt. An issue the panel raised three times and was wrong about three times is worth saying out loud.\n\nThen propose the rules worth carrying into the next period. A good rule is one that would have changed how this review ran: a treatment already agreed with the counterparty so it stops being re-raised, a defect that recurs so the panel looks there first, a standing instruction of the fund manager’s, or a fact about the fund the deliverable keeps getting wrong.\n\nPropose nothing you cannot tie to a specific issue in this review. A rule drawn from one ambiguous issue is worse than no rule: it will be applied to every future review. Fewer and sharper beats more.';
 
 /* ───────── memory ───────── */
 
@@ -97,7 +97,7 @@ const MEMORY = [
   {
     id: 'm-bank',
     kind: 'Treatment',
-    text: 'Bank charges and interest carry no counterparty by convention. Agreed with Meridian — do not raise them as unmatched.',
+    text: 'Bank charges and interest carry no counterparty by convention. Agreed with Meridian, so do not raise them as unmatched.',
     source: 'FY2025 financial statements · pass 3',
     review: 'r-fy2025',
     created: '2026-01-14',
@@ -196,7 +196,7 @@ const DOCUMENTS: [string, string, string][] = [
   [
     OPEN_REVIEW,
     'staging.xlsx (extract)',
-    `Q1 2026 journal batch — staging sheet, rows 40-62 of 101
+    `Q1 2026 journal batch · staging sheet, rows 40-62 of 101
 
 row  date        narrative                amount            ccy  counterparty        project   position  status
 44   2026-03-24  MGMT FEE ACCRUAL Q1      1,062,500.00      EUR  Fenwick Holdings    FNW-01    open      Posted
@@ -221,7 +221,7 @@ Reference-data notes appended by the preparer:
   [
     OPEN_REVIEW,
     'recon.xlsx (extract)',
-    `Cash reconciliation — DKK operating account, period ending 31 March 2026
+    `Cash reconciliation · DKK operating account, period ending 31 March 2026
 
 Statement balance          DKK  2,041,118.22
 Workbook balance           DKK  2,041,252.73
@@ -237,7 +237,7 @@ Difference                 SEK         -0.02   within agreed rounding tolerance`
   [
     OPEN_REVIEW,
     'Fenwick side letter · 11 Sept 2025 (extract)',
-    `SIDE LETTER — FENWICK HOLDINGS LP
+    `SIDE LETTER: FENWICK HOLDINGS LP
 
 §4.2  Management Fee
 "...notwithstanding clause 8.1 of the Partnership Agreement, the Management Fee
@@ -251,7 +251,7 @@ Counsel letter, 2 April 2026, §3
 "Contractual rate, 27 March 2026: 1.0389605 (EUR/DKK), fixed by schedule 4 of the
  SPA. No market rate applies to consideration payable on that date."`,
   ],
-  ['r-fy2025', 'FY2025 financial statements (extract)', 'Note 21 — Subsequent events. Carried forward from FY2024 with the date advanced.'],
+  ['r-fy2025', 'FY2025 financial statements (extract)', 'Note 21: Subsequent events. Carried forward from FY2024 with the date advanced.'],
   ['r-fy2025', 'FY2025 trial balance (extract)', 'Trial balance as at 31 December 2025. Closed.'],
   ['r-q4-2025', 'Q4 2025 NAV pack (extract)', 'NAV statement as at 31 December 2025. Closed.'],
   ['r-q4-2025', 'Cephalus allocation rules v1 (extract)', 'Allocation rules in force to 29 February 2026. Superseded 1 March 2026.'],
@@ -375,16 +375,16 @@ const ISSUES: SeedIssue[] = [
       positions: [
         {
           agent: 'Unresolved reference data',
-          verdict: 'Presentational — routine. Bank charges carry no counterparty by nature.',
+          verdict: 'Presentational and routine. Bank charges carry no counterparty by nature.',
         },
         {
           agent: 'Cephalus allocation watch',
           verdict:
-            'Material — these are expenses with no allocation, and your instruction says allocation decisions come to you.',
+            'Material: these are expenses with no allocation, and your instruction says allocation decisions come to you.',
         },
       ],
       ruling:
-        'Kept at material and routed to you. Your instruction outranks a built-in agent’s view of what is routine — that is the tie-break you set.',
+        'Kept at material and routed to you. Your instruction outranks a built-in agent’s view of what is routine. That is the tie-break you set.',
     },
   },
   {

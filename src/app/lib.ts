@@ -133,7 +133,7 @@ const startOfDay = (value: Date): number =>
 /** "Today", "Yesterday", then "14 Jan 2026". Financial dates, not "3d ago". */
 export function formatDay(iso: string): string {
   const date = new Date(iso);
-  if (Number.isNaN(date.getTime())) return '—';
+  if (Number.isNaN(date.getTime())) return 'Unknown';
   const days = Math.round((startOfDay(new Date()) - startOfDay(date)) / DAY_MS);
   if (days === 0) return 'Today';
   if (days === 1) return 'Yesterday';
@@ -142,7 +142,7 @@ export function formatDay(iso: string): string {
 
 export function formatWhen(iso: string): string {
   const date = new Date(iso);
-  if (Number.isNaN(date.getTime())) return '—';
+  if (Number.isNaN(date.getTime())) return 'Unknown';
   const time = date.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
   return `${formatDay(iso)}, ${time}`;
 }

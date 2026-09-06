@@ -11,6 +11,7 @@ import { api } from '../api';
 import { streamChat } from '../sse';
 import AgentPicker from './AgentPicker';
 import ConnectPanel from './ConnectPanel';
+import Icon from './Icon';
 
 interface HistoryResponse {
   conversation: { contextId: string | null; activeTaskId: string | null } | null;
@@ -33,6 +34,7 @@ export default function ChatView(props: {
   const [draft, setDraft] = useState('');
   const [live, setLive] = useState<LiveTurn | null>(null);
   const [error, setError] = useState('');
+  const [confirmReset, setConfirmReset] = useState(false);
   const scroller = useRef<HTMLDivElement | null>(null);
 
   // Keep the selection valid as agents connect and disconnect.
@@ -52,6 +54,7 @@ export default function ChatView(props: {
   useEffect(() => {
     setMessages([]);
     setError('');
+    setConfirmReset(false);
     if (selectedId) void loadHistory(selectedId).catch(() => undefined);
   }, [selectedId, loadHistory]);
 
@@ -91,9 +94,12 @@ export default function ChatView(props: {
     }
   };
 
+  // Two presses rather than a browser confirm box, which is the one dialog on the
+  // page the app cannot style and the only place it would look like someone else's
+  // software. The second button says what it does, so nothing is lost by dropping it.
   const reset = async () => {
     if (!selectedId || live) return;
-    if (!window.confirm('Clear this conversation? The agent will also forget its context.')) return;
+    setConfirmReset(false);
     await api(`/api/agents/${encodeURIComponent(selectedId)}/messages`, { method: 'DELETE' });
     await loadHistory(selectedId);
   };
@@ -120,16 +126,35 @@ export default function ChatView(props: {
     <section className="panel chat">
       <div className="chat-toolbar">
         <AgentPicker agents={agents} selectedId={selectedId} onSelect={setSelectedId} />
-        {selectedAgent?.warning && <span className="warn">⚠ {selectedAgent.warning}</span>}
-        <button className="button subtle" onClick={() => void reset()} disabled={!messages.length || !!live}>
-          Reset conversation
-        </button>
+        {selectedAgent?.warning && (
+          <span className="warn">
+            <Icon name="alert" size={14} /> {selectedAgent.warning}
+          </span>
+        )}
+        {confirmReset ? (
+          <span className="row">
+            <button className="button danger" onClick={() => void reset()} disabled={!!live}>
+              Clear it, and the agent’s context
+            </button>
+            <button className="button subtle" onClick={() => setConfirmReset(false)}>
+              Keep
+            </button>
+          </span>
+        ) : (
+          <button
+            className="button subtle"
+            onClick={() => setConfirmReset(true)}
+            disabled={!messages.length || !!live}
+          >
+            Reset conversation
+          </button>
+        )}
       </div>
 
       <div className="chat-log" ref={scroller}>
         {messages.length === 0 && !live && (
           <p className="muted center">
-            Say hello — a reply here proves the connection works end to end.
+            Say hello. A reply here proves the connection works end to end.
           </p>
         )}
         {messages.map((message, index) => (

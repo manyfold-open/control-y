@@ -8,6 +8,7 @@ import { useState } from 'react';
 import type { ConnectedAgent, ConnectSession } from '../../shared/types';
 import { api } from '../api';
 import ConnectPanel from './ConnectPanel';
+import Icon from './Icon';
 
 export default function SettingsView(props: {
   agents: ConnectedAgent[];
@@ -60,9 +61,9 @@ export default function SettingsView(props: {
                 {agent.verified ? (
                   <span className="badge ok">verified</span>
                 ) : (
-                  <span className="badge warn" title={agent.warning ?? undefined}>
-                    unverified
-                  </span>
+                  // No `title`: the warning is spelled out below, and a tooltip is
+                  // drawn by the operating system rather than by this app.
+                  <span className="badge warn">unverified</span>
                 )}
               </div>
               {agent.description && <p className="muted">{agent.description}</p>}
@@ -70,7 +71,11 @@ export default function SettingsView(props: {
                 {new URL(agent.rpcUrl).host} · connected {new Date(agent.connectedAt).toLocaleString()}
                 {agent.expiresAt ? ` · authorization expires ${new Date(agent.expiresAt).toLocaleString()}` : ''}
               </p>
-              {agent.warning && <p className="warn small">⚠ {agent.warning}</p>}
+              {agent.warning && (
+                <p className="warn small">
+                  <Icon name="alert" size={14} /> {agent.warning}
+                </p>
+              )}
             </div>
             <div className="agent-card-actions">
               <button
@@ -106,13 +111,13 @@ export default function SettingsView(props: {
       {error && <div className="notice error">{error}</div>}
 
       {props.agents.length > 0 && (
-        <>
+        <div className="connect-more">
           <h3>Connect more agents</h3>
           <p className="muted">
-            Re-approving an agent that is already connected rotates its token in place — useful when an authorization
-            expired.
+            Re-approving an agent that is already connected rotates its token in place, which is what you want once an
+            authorization has expired.
           </p>
-        </>
+        </div>
       )}
       <ConnectPanel initialSession={props.initialSession} onConnected={props.refreshState} />
     </section>

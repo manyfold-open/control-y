@@ -21,6 +21,8 @@ const paths: Record<string, string> = {
   edit: 'M13.7 3.8a1.7 1.7 0 0 1 2.4 2.4l-9 9-3.3.9.9-3.3z M12.5 5l2.5 2.5',
   /* A target, for whether an entry is aimed at the review being run. */
   scope: 'M10 16.5a6.5 6.5 0 1 0 0-13 6.5 6.5 0 0 0 0 13z M10 12.5a2.5 2.5 0 1 0 0-5 2.5 2.5 0 0 0 0 5z',
+  /* Replaces the ⚠ character, which the platform renders as colour emoji. */
+  alert: 'M10 3.2 2.9 16h14.2z M10 8v3.4 M10 13.8h.01',
 };
 
 export default function Icon({ name, size = 16 }: { name: keyof typeof paths | string; size?: number }) {
