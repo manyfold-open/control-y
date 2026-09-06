@@ -74,7 +74,13 @@ export default function PeopleView({
                 </span>
                 <span className="people-cell">{person.role || 'none recorded'}</span>
                 <span className="people-cell emphasis">{title || 'none recorded'}</span>
-                <span className="people-cell tnum">{count}</span>
+                {/* The column head says "Open" until the table drops it and the
+                    cell is a bare digit next to somebody's name. Below that
+                    width the number says what it counts itself. */}
+                <span className="people-cell tnum">
+                  {count}
+                  <span className="cell-label"> open</span>
+                </span>
               </button>
             );
           })}
