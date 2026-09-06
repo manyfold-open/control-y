@@ -145,6 +145,13 @@
 * { box-sizing: border-box; }
 
 html, body, #root { height: 100%; }
+/* A phone's viewport is not a fixed height: the URL bar slides away as you
+   scroll and 100vh keeps measuring the tall version, so the bottom band of the
+   app sits below the fold until you have scrolled. dvh measures what is
+   actually visible. It equals vh wherever there is no such chrome. */
+@supports (height: 100dvh) {
+  html, body, #root { height: 100dvh; }
+}
 
 body {
   margin: 0;
@@ -663,6 +670,8 @@ p { margin: 0; }
 .person-org { font: 400 12px/1.4 var(--font-sans); color: var(--stone); }
 .people-cell { color: var(--steel); font-size: 13px; }
 .people-cell.emphasis { color: var(--slate); }
+/* Shown only once the column head that explained the cell is gone. */
+.cell-label { display: none; }
 
 /* ═══ Convergence — the count of turns ═════════════════════════════════════
    Typography carries it. A bar chart at this size is decoration competing with
@@ -1646,42 +1655,283 @@ input:focus-visible, textarea:focus-visible, select:focus-visible {
 .doc-name { flex: 1; min-width: 0; color: var(--slate); font-size: 13px; overflow-wrap: anywhere; }
 .doc-size { color: var(--stone); font: 400 12px/1.4 var(--font-mono); }
 .doc-add { display: grid; gap: var(--space-sm); margin-top: var(--space-sm); }
+.file-preview-note { color: var(--stone); font-size: 12px; line-height: 1.5; }
 
 
-/* ═══ Responsive ════════════════════════════════════════════════════════════ */
+/* ═══ Responsive ════════════════════════════════════════════════════════════
+   Two stops, both content-driven rather than device-named.
+
+     ≤ 1040px  the rail narrows but keeps its labels, and the four-column
+               tables give up their columns.
+     ≤ 720px   the rail leaves the side altogether.
+
+   There is deliberately no icon-only rail any more. It existed between those
+   two stops and it was the worst of both: five unlabelled glyphs, no hover to
+   name them on a touch screen, and the open count — the product's only
+   number — was the first thing it dropped. A nav is either labelled beside
+   the work or labelled beneath it. */
+
+@media (max-width: 1040px) {
+  /* 200px still fits "Connections" and still leaves the work 520px at this
+     stop's own width. Labels are cheaper than the guessing they prevent. */
+  .app { grid-template-columns: 200px minmax(0, 1fr); }
+  .rail { padding: var(--space-md) var(--space-xs); }
+  .rail-brand { padding: var(--space-xxs) var(--space-xs) var(--space-md); }
+  .page { padding-inline: var(--space-xxl); }
+}
 
 @media (max-width: 940px) {
-  .app { grid-template-columns: 64px minmax(0, 1fr); }
-  .rail { padding: var(--space-md) var(--space-xs); }
-  .logo-word, .rail-label, .rail-identity, .rail-count { display: none; }
-  .rail-item { justify-content: center; padding: var(--space-xs); }
-  .rail-brand { justify-content: center; padding: var(--space-xxs) 0 var(--space-md); }
-  .rail-foot { justify-content: center; }
-
-  .issue-detail { padding-inline: var(--space-lg); }
-  .queue-overlay { width: 100vw; border-right: 0; }
-
+  /* Where the four-column table actually runs out of room: below this the
+     title column drops under about 200px and every review name wraps. */
   .page { padding: var(--space-xl) var(--space-lg) var(--space-section); }
   /* Stack the title above its action, but the action keeps its own width. A
      full-bleed primary button reads as a banner, not a control. */
   .page-head { flex-direction: column; align-items: flex-start; gap: var(--space-md); }
-  .review-head { padding: var(--space-md) var(--space-lg) var(--space-xs); }
 
+  .review-head { padding: var(--space-md) var(--space-lg) var(--space-xs); }
   /* The bar stops fitting one line: let it wrap rather than push "Run pass"
      off the right edge. The number keeps its place beside the title. */
   .review-bar { flex-wrap: wrap; row-gap: var(--space-xs); }
   .review-identity { flex: 1 1 100%; }
   .bar-meta { margin-left: 0; }
   .review-actions { margin-left: auto; }
+  .review-bar, .queue-strip, .panel-strip { padding-inline: var(--space-lg); }
+  .blocked-note { padding-inline: var(--space-lg); }
+  .queue-to, .queue-keys { display: none; }
+  .issue-detail { padding-inline: var(--space-lg); }
+  .queue-overlay { width: min(460px, 100vw); }
+
+  /* ── Tables lose their columns ──────────────────────────────────────────
+     Four columns at this width compress every cell to a word. Each row
+     becomes what it already half was: a title, its counterparty, and the
+     facts underneath. Dropping the head means any cell that was only legible
+     under a column label has to carry its own — see PeopleView's count. */
+  .table-head { display: none; }
+
+  /* The review keeps its title to itself and drops its facts onto one line
+     below. Not a two-column grid: a column wide enough for both the date and
+     the panel counts took 180px off the title, which is the only part of the
+     row anybody scans. */
+  .review-row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    column-gap: var(--space-md);
+    row-gap: var(--space-xxs);
+  }
+
+  .review-row-main { flex: 1 1 100%; }
+  .review-row-convergence, .review-row-panel { flex: 0 0 auto; }
+  .review-row-updated { flex: 0 0 auto; margin-left: auto; text-align: right; }
+
+  /* Back to one line each. The two-line stack these cells use as columns is
+     what a column needs, not what a row of facts needs. */
+  .review-row-convergence .convergence,
+  .review-row-panel {
+    display: inline-flex;
+    align-items: baseline;
+    flex-wrap: wrap;
+    gap: var(--space-xs);
+  }
+  .review-row-convergence .cv-unit { margin-left: 6px; }
+
+  /* The person, though, does want two columns: a name, and the count they
+     owe. The two titles get a line each below, because they are two
+     different facts and running them together read as one sentence. */
+  .people-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: baseline;
+    gap: var(--space-xxs) var(--space-sm);
+  }
+  .people-row .person { grid-area: 1 / 1; }
+  .people-row .people-cell.tnum { grid-area: 1 / 2; justify-self: end; }
+  .people-row .people-cell:not(.tnum) { grid-column: 1 / -1; }
+  .people-row .people-cell { color: var(--stone); font-size: 13px; }
+  .people-row .people-cell.emphasis { color: var(--steel); }
+  .cell-label { display: inline; }
+
   .dialog-foot { justify-content: stretch; }
   .dialog-foot .button { flex: 1 1 auto; justify-content: center; }
   .dialog-foot .button.danger, .dialog-foot .button.danger-outline { flex-basis: 100%; margin-right: 0; }
-  .review-bar, .queue-strip, .panel-strip { padding-inline: var(--space-lg); }
-  .queue-to, .queue-keys { display: none; }
-  .table-head { display: none; }
-  .review-row, .people-row { grid-template-columns: minmax(0, 1fr); gap: var(--space-xs); }
-  .review-row-updated { text-align: left; }
-  .button { padding: 10px 18px; }
 }
 
-.file-preview-note { color: var(--stone); font-size: 12px; line-height: 1.5; }
+/* The rail moves only when there is height to spend on it. A phone on its side
+   is 375px tall: a 59px band across the bottom is 16% of everything the reader
+   has, and the width it would buy back is width that screen already has. Below
+   this the rail stays where the 940px stop leaves it, at the side. */
+@media (max-width: 720px) and (min-height: 481px) {
+  /* ── The rail leaves the side ───────────────────────────────────────────
+     A side rail costs its width on every screen. At 375px even the collapsed
+     64px version was 17% of the viewport, spent permanently on navigation
+     that is used a handful of times a session, while the issue statement it
+     pushed aside is the thing being read.
+
+     So on a phone the same five destinations, in the same order, become a
+     bottom tab bar: labels back, count back, thumb-reachable, and the work
+     gets the whole width.
+
+     DESIGN.md's collapsing strategy says a hamburger drawer below 1024px, but
+     that rule describes the Mintlify docs nav — a long link list on a
+     marketing site. Five fixed destinations in an authenticated workspace is
+     a tab bar, and a drawer would put a tap in front of the number this
+     product exists to show. */
+
+  .app {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: minmax(0, 1fr) auto;
+  }
+
+  /* The nav stays first in the DOM, so tab order still reaches it before the
+     work; only the grid moves it down. */
+  .work { order: 1; }
+
+  .rail {
+    order: 2;
+    flex-direction: row;
+    gap: 0;
+    padding: var(--space-xxs) var(--space-xxs)
+      calc(var(--space-xxs) + env(safe-area-inset-bottom));
+    background: var(--canvas);
+    border-right: 0;
+    border-top: 1px solid var(--hairline);
+  }
+
+  /* The wordmark names the app on a screen that is entirely the app, and the
+     identity names the only person who signs in. Neither earns 56px of the
+     one band that is always on screen. */
+  .rail-brand, .rail-foot { display: none; }
+
+  .rail-nav {
+    flex: 1;
+    grid-auto-flow: column;
+    grid-auto-columns: 1fr;
+    gap: 0;
+  }
+
+  .rail-item {
+    position: relative;
+    flex-direction: column;
+    justify-content: center;
+    gap: 3px;
+    min-height: 50px;
+    padding: var(--space-xs) 2px;
+    text-align: center;
+    color: var(--stone);
+  }
+
+  /* A bordered pill under each of five 70px tabs reads as five buttons in a
+     row, not as one bar with a current tab. Weight and ink carry it instead. */
+  .rail-item.active {
+    background: transparent;
+    border: 0;
+    padding: var(--space-xs) 2px;
+    box-shadow: none;
+    color: var(--ink);
+  }
+  .rail-item:hover { background: transparent; }
+
+  .rail-label {
+    display: block;
+    font: 500 11px/1.2 var(--font-sans);
+  }
+  .rail-item.active .rail-label { font-weight: 600; }
+
+  /* Riding the icon, because beside an 11px label it would read as part of the
+     word. Neutral ink, not --material: a count of open turns is a number, not
+     a verdict, and red here would spend the one colour that means "serious". */
+  .rail-count {
+    position: absolute;
+    top: 3px;
+    left: 50%;
+    margin-left: 4px;
+    display: inline-grid;
+    place-items: center;
+    min-width: 17px;
+    height: 17px;
+    padding: 0 5px;
+    border-radius: var(--rounded-full);
+    background: var(--ink);
+    color: var(--on-primary);
+    font: 500 10px/1 var(--font-mono);
+  }
+  .rail-item.active .rail-count { color: var(--on-primary); }
+}
+
+@media (max-width: 720px) {
+  /* ── Rows run edge to edge ──────────────────────────────────────────────
+     A bordered card inset inside a padded page is two frames around the same
+     rows, and on 375px the pair cost 40px of the width the titles needed. The
+     page keeps its padding; the rows take it back and keep their own. */
+  .page { padding: var(--space-lg) var(--space-md) var(--space-xxxl); }
+
+  .table-card {
+    border-inline: 0;
+    border-radius: 0;
+    margin-inline: calc(var(--space-md) * -1);
+  }
+  .review-row, .people-row { padding-inline: var(--space-md); }
+
+  .page-title { font-size: 22px; }
+  .page-head { gap: var(--space-sm); margin-bottom: var(--space-md); }
+
+  /* ── The review screen ── */
+  .review-bar { min-height: 0; padding: var(--space-xs) var(--space-md); }
+  .review-head { padding: var(--space-sm) var(--space-md) var(--space-xxs); }
+  .review-title { font-size: 17px; }
+  .review-bar, .queue-strip, .panel-strip { padding-inline: var(--space-md); }
+  /* Right-aligned fine print reads as a caption on a wide screen and as a
+     mistake on a narrow one. */
+  .blocked-note { padding-inline: var(--space-md); text-align: left; }
+  .issue-detail { padding: var(--space-lg) var(--space-md) var(--space-xxxl); }
+  .detail-statement { font-size: 17px; }
+  .detail-why { font-size: 14px; }
+
+  /* The marks are the only way back to an issue you have passed, so they have
+     to be hittable with a thumb, not just readable. */
+  .queue-strip { padding-block: var(--space-xs); }
+  .queue-marks { gap: 4px; height: 22px; }
+  .queue-mark { width: 11px; }
+  .queue-mark.current { height: 22px; }
+
+  .queue-overlay { width: 100vw; border-right: 0; }
+  .queue-overlay-body { padding-bottom: calc(var(--space-xxl) + env(safe-area-inset-bottom)); }
+  .issue-row, .issue-group-head, .issue-group-action { padding-inline: var(--space-md); }
+  .queue-overlay-head { padding: var(--space-sm) var(--space-xs) 0 var(--space-md); }
+  /* The filters scroll sideways. A segment cut flush against the close button
+     reads as clipped; ending the run short of it reads as more to come. */
+  .segmented { padding-right: var(--space-xs); }
+
+  /* ── Dialogs become sheets ─────────────────────────────────────────────
+     A box centred in the viewport is a desktop shape: on a phone the keyboard
+     shoves it up the screen and the top of the form leaves. Anchored to the
+     bottom edge it opens where the thumb is and grows upward instead. */
+  .overlay { place-items: end stretch; }
+  .dialog, .dialog.wide {
+    width: 100%;
+    max-height: 92dvh;
+    border-bottom: 0;
+    border-radius: var(--rounded-lg) var(--rounded-lg) 0 0;
+    padding: var(--space-lg) var(--space-md)
+      calc(var(--space-lg) + env(safe-area-inset-bottom));
+  }
+
+  /* ── Touch ─────────────────────────────────────────────────────────────
+     DESIGN.md's touch-target table: pills and icon buttons to 44px, inputs to
+     44px. 16px on a field is not a type decision — below it, iOS Safari zooms
+     the whole page on focus and the layout the user was reading is gone. */
+  .button { min-height: 44px; padding: 10px 18px; }
+  .button.small { min-height: 38px; padding: 8px 14px; }
+  .button.icon, .icon-button { width: 44px; height: 44px; }
+  input, textarea, select, .select-trigger { font-size: 16px; min-height: 44px; }
+  .select-option { min-height: 44px; }
+  .segment { padding: var(--space-sm) var(--space-sm); }
+  .tab { padding: 9px 16px; }
+  .crumb { padding: var(--space-xxs) 0; }
+
+  /* Bubbles at 85% of a phone leave a 40px gutter that says nothing. */
+  .bubble { max-width: 92%; }
+  .chat-log { max-height: none; }
+  .composer { grid-template-columns: minmax(0, 1fr); }
+  .composer .button { justify-content: center; }
+}
