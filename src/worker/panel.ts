@@ -64,12 +64,20 @@ const MAX_ISSUES_PER_PASS = 200;
 /* ───────── one A2A turn ───────── */
 
 /**
- * One uploaded file, as the agent receives it: a presigned R2 URL it fetches for
- * itself, rather than bytes inlined into the JSON-RPC body.
+ * One uploaded file, as the agent is offered it.
  *
- * That URL is a bearer capability handed to a third party — anyone holding it can
- * read that document until it expires. `FETCH_URL_TTL_SECONDS` is sized to a pass
- * and no longer, and the URLs are minted per pass, not stored.
+ * MEASURED, 5 Sept 2026: Manyfold agents do not receive A2A `file` parts at all.
+ * Asked to review a PDF stating a 1.95% fee against a 1.25% cap in the same
+ * document, every reviewer returned nothing found, and one said so outright —
+ * "I can't actually see any content from Q3 2026 fee schedule.pdf — the message
+ * only contains a placeholder tag". That was true of `bytes` and of `uri`
+ * alike, and was equally true before uploads moved to R2.
+ *
+ * The part is still sent, as a `uri`: it costs a couple of hundred bytes and
+ * starts working by itself the day agents honour attachments, whereas inlining
+ * `bytes` would put megabytes into every reviewer's request body for nothing.
+ * What the reviewer is TOLD about the file is the honest part — see
+ * `documentsBlock`, which must not claim the contents are available.
  */
 interface Attachment {
   uri: string;
@@ -77,11 +85,7 @@ interface Attachment {
   name: string;
 }
 
-/**
- * Signs every file on a review once for the whole pass. Per reviewer would mint
- * the same URL five times over, and inlining the bytes (as this did before R2)
- * re-serialised every file into every reviewer's request body.
- */
+/** Signed once per pass, not once per reviewer. */
 async function attachmentsFor(env: Env, documents: PanelDocument[]): Promise<Attachment[]> {
   const files = documents.filter((document) => document.kind === 'file');
   return Promise.all(
@@ -265,7 +269,12 @@ function documentsBlock(docs: PanelDocument[]): string {
   return docs
     .map((doc) => {
       if (doc.kind === 'file') {
-        return `### ${doc.name}\n[attached to the message as a ${doc.mediaType} file]`;
+        // Says what is true. Claiming the file is "attached" invited the reviewer
+        // to look for content that never arrives, and one duly spent its turn
+        // explaining that it could only see the placeholder. Naming the file and
+        // admitting it is unreadable at least stops a reviewer reporting clean
+        // over a document nobody read.
+        return `### ${doc.name}\n[a ${doc.mediaType} file is held with this review, but its contents are NOT available to you. Do not treat it as reviewed, and say so if a finding would depend on it.]`;
       }
       const room = Math.min(DOC_CHARS_EACH, budget);
       budget -= room;
@@ -638,10 +647,20 @@ async function runPass(
       const payload = parsePayload<{ findings?: unknown }>(reply);
       const raw = Array.isArray(payload?.findings) ? payload.findings : null;
       if (!raw) {
+        // Carry an excerpt of what it actually said. An agent that answers in
+        // prose is usually explaining itself — that it could not read a document,
+        // or is refusing — and discarding that left the pass strip saying only
+        // "did not answer", which is the least useful true thing to report.
+        const excerpt = safeErrorText(reply).replace(/\s+/g, ' ').trim().slice(0, 240);
         return {
           agent,
           findings: [] as Record<string, unknown>[],
-          result: await report({ key: agent.key, name: agent.name, findings: null, error: 'Reply was not the expected JSON.' }),
+          result: await report({
+            key: agent.key,
+            name: agent.name,
+            findings: null,
+            error: excerpt ? `Reply was not the expected JSON. It said: "${excerpt}"` : 'Reply was not the expected JSON.',
+          }),
         };
       }
       const findings = raw.slice(0, 60).filter((f): f is Record<string, unknown> => !!f && typeof f === 'object');

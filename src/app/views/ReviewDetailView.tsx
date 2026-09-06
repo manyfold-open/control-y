@@ -1057,13 +1057,17 @@ function ReviewSettings({
                 <span>
                   {formatBytes(pending.size)} · Ready to upload · {pending.type || 'application/octet-stream'}
                 </span>
+                <span className="file-preview-warn">
+                  Stored and downloadable, but the panel cannot read inside it yet — paste the part that matters as
+                  text if you need it reviewed.
+                </span>
               </div>
             ) : (
               <Field
                 label="Its text"
                 hint={
                   uploadsEnabled
-                    ? `Paste an extract, or load a file up to ${megabytes(maxBytes)}.`
+                    ? `Paste an extract, or load a file up to ${megabytes(maxBytes)}. Only pasted text is read by the panel.`
                     : 'Paste an extract. File uploads are not configured on this deployment.'
                 }
               >
