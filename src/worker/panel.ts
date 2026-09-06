@@ -55,8 +55,26 @@ import {
   type PanelDocument,
 } from './store';
 
-const TURN_TIMEOUT_MS = 4 * 60_000;
+/**
+ * The ceiling on one turn, and the silence that ends it early.
+ *
+ * MEASURED on FY2025, whose deliverable is a 656 KB spreadsheet: these agents do
+ * not stream as they think. Four of five reviewers sent nothing at all for well
+ * over a minute and then answered in one burst, so silence is a poor signal for
+ * a dead turn — a 90s idle bound cut off four turns that a flat four-minute
+ * budget had let three of five finish.
+ *
+ * The idle bound therefore has to clear the longest honest think, and earns its
+ * keep only against a stream that dies outright. The ceiling is what actually
+ * bounds a pass. Both are generous because the alternative is throwing away a
+ * turn that was about to answer, and a turn costs real money.
+ */
+const TURN_TIMEOUT_MS = 12 * 60_000;
+const TURN_IDLE_MS = 6 * 60_000;
 const AGENT_CONCURRENCY = 3;
+/** Floor between two progress events from the same agent. Same figure as the chat. */
+const PROGRESS_INTERVAL_MS = 150;
+const PROGRESS_NOTE_CHARS = 200;
 const DOC_CHARS_EACH = 24_000;
 const DOC_CHARS_TOTAL = 60_000;
 const MAX_ISSUES_PER_PASS = 200;
@@ -146,6 +164,40 @@ async function credentialResolver(env: Env): Promise<CredentialFor> {
   };
 }
 
+/** What was last said about one agent, so the next snapshot can be judged against it. */
+export interface ProgressState {
+  state: string;
+  note: string;
+  /** When that was sent, in ms. */
+  at: number;
+}
+
+/**
+ * Whether a mid-turn snapshot is worth telling the browser about, and in what words.
+ *
+ * A turn emits many snapshots and three turns run at once, so most are dropped: a
+ * terminal one is the `agent` event's business, and one that repeats what was
+ * already said is nothing. A state change always goes through — `submitted` to
+ * `working` is the whole point — while note churn under an unchanged state is rate
+ * limited, since the state is the fact and the note is only prose about it.
+ *
+ * The note is the agent's own text on its way to a browser, so it goes through
+ * `safeErrorText` like everything else that crosses out of the Worker.
+ */
+export function progressUpdate(
+  last: ProgressState,
+  snapshot: { state: string; progressText: string; terminal: boolean },
+  atMs: number,
+): { state: string; note: string } | null {
+  if (snapshot.terminal || !snapshot.state) return null;
+  const note = safeErrorText(snapshot.progressText).slice(0, PROGRESS_NOTE_CHARS);
+  if (snapshot.state === last.state) {
+    if (note === last.note) return null;
+    if (atMs - last.at < PROGRESS_INTERVAL_MS) return null;
+  }
+  return { state: snapshot.state, note };
+}
+
 /**
  * One stateless turn: no contextId, so each prompt is read on its own and one
  * agent's reading cannot colour another's.
@@ -153,13 +205,34 @@ async function credentialResolver(env: Env): Promise<CredentialFor> {
  * messageId is fresh per call, unlike the chat's derived ids. A2A treats it as
  * an idempotency key, and every panel call is a distinct prompt sent exactly
  * once — a pass is never retried in place, only re-run as a new pass.
+ *
+ * `onProgress` is how a turn says what it is doing while it does it. It is only
+ * ever a report, so the callers below keep it to an `emit` — which already gives
+ * up on a browser that went away rather than throwing a UI detail into a run.
  */
-async function ask(cred: AgentCredential, prompt: string, attachments: Attachment[] = []): Promise<string> {
+async function ask(
+  cred: AgentCredential,
+  prompt: string,
+  options: {
+    attachments?: Attachment[];
+    onProgress?: (update: { state: string; note: string }) => Promise<void> | void;
+  } = {},
+): Promise<string> {
+  const { attachments = [], onProgress } = options;
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), TURN_TIMEOUT_MS);
+  let last: ProgressState = { state: '', note: '', at: 0 };
   try {
     const snapshot = await consumeA2AStream({
       cred,
+      onSnapshot: onProgress
+        ? async (current) => {
+            const update = progressUpdate(last, current, Date.now());
+            if (!update) return;
+            last = { ...update, at: Date.now() };
+            await onProgress(update);
+          }
+        : undefined,
       params: {
         message: {
           kind: 'message',
@@ -180,6 +253,7 @@ async function ask(cred: AgentCredential, prompt: string, attachments: Attachmen
         configuration: { acceptedOutputModes: ['text/plain'] },
       },
       signal: controller.signal,
+      idleMs: TURN_IDLE_MS,
     });
     const text = snapshot.text.trim();
     if (!text) throw new A2AError(`${cred.label} answered with no text.`, true);
@@ -678,8 +752,18 @@ async function runPass(
       await emit({ type: 'stage', stage: 'reviewers', done: answered, total: enabled.length });
       return result;
     };
+    const progress = (state: string, note = '') =>
+      emit({ type: 'progress', key: agent.key, name: agent.name, state, note });
     try {
-      const reply = await ask(await credentialOf(agent), buildAgentPrompt(agent.prompt, ctx), attachments);
+      const cred = await credentialOf(agent);
+      // Said before the turn opens, rather than by it. Concurrency is capped, so an
+      // agent that has not been asked yet is queued rather than slow, and only this
+      // tells the two apart on screen.
+      await progress('submitted');
+      const reply = await ask(cred, buildAgentPrompt(agent.prompt, ctx), {
+        attachments,
+        onProgress: (update) => progress(update.state, update.note),
+      });
       const payload = parsePayload<{ findings?: unknown }>(reply);
       const raw = Array.isArray(payload?.findings) ? payload.findings : null;
       if (!raw) {
@@ -757,9 +841,14 @@ async function runPass(
 
   await emit({ type: 'stage', stage: 'consolidator', done: 0, total: 1 });
 
+  const consolidatorCred = await credentialOf(consolidator);
+  const consolidatorProgress = (state: string, note = '') =>
+    emit({ type: 'progress', key: consolidator.key, name: consolidator.name, state, note });
+  await consolidatorProgress('submitted');
   const reply = await ask(
-    await credentialOf(consolidator),
+    consolidatorCred,
     buildConsolidatorPrompt(consolidator.prompt, ctx, rosterBlock, findingsBlock),
+    { onProgress: (update) => consolidatorProgress(update.state, update.note) },
   );
   const payload = parsePayload<{ issues?: unknown }>(reply);
   if (!Array.isArray(payload?.issues)) {

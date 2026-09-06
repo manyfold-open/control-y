@@ -330,9 +330,49 @@ export async function consumeA2AStream(options: {
   params: Record<string, unknown>;
   signal: AbortSignal;
   onSnapshot?: (snapshot: StreamSnapshot) => Promise<void> | void;
+  /**
+   * Abandon the stream after this long with no bytes at all. Distinct from the
+   * caller's `signal`, which is a ceiling on the whole turn: a turn reading a
+   * large attachment can legitimately run for minutes, and killing it on the
+   * total elapsed time throws away work that was still arriving. Silence is the
+   * signal that something is actually wrong.
+   */
+  idleMs?: number;
 }): Promise<StreamSnapshot> {
-  const { cred } = options;
+  const { cred, idleMs } = options;
+
+  // Own controller so an idle stream can be dropped without touching the
+  // caller's ceiling, and so both reasons abort the same fetch.
+  const controller = new AbortController();
+  let idle = false;
+  let idleTimer: ReturnType<typeof setTimeout> | null = null;
+  const onOuterAbort = () => controller.abort();
+  if (options.signal.aborted) controller.abort();
+  else options.signal.addEventListener('abort', onOuterAbort, { once: true });
+  const armIdle = () => {
+    if (!idleMs) return;
+    if (idleTimer !== null) clearTimeout(idleTimer);
+    idleTimer = setTimeout(() => {
+      idle = true;
+      controller.abort();
+    }, idleMs);
+  };
+  const disarm = () => {
+    if (idleTimer !== null) clearTimeout(idleTimer);
+    idleTimer = null;
+    options.signal.removeEventListener('abort', onOuterAbort);
+  };
+  /** Says which clock ran out, because the two mean different things. */
+  const stalled = () =>
+    new A2AError(
+      idle
+        ? `${cred.label} stopped sending for ${Math.round((idleMs ?? 0) / 1000)}s.`
+        : `${cred.label} stream timed out.`,
+      true,
+    );
+
   let response: Response;
+  armIdle();
   try {
     response = await fetch(cred.rpcUrl, {
       method: 'POST',
@@ -342,16 +382,18 @@ export async function consumeA2AStream(options: {
         authorization: `Bearer ${cred.token}`,
       },
       redirect: 'manual',
-      signal: options.signal,
+      signal: controller.signal,
       body: rpcBody('message/stream', options.params),
     });
   } catch (error) {
-    if ((error as Error)?.name === 'AbortError') {
-      throw new A2AError(`${cred.label} stream timed out.`, true);
-    }
+    disarm();
+    if ((error as Error)?.name === 'AbortError') throw stalled();
     throw new A2AError(safeErrorText(error instanceof Error ? error.message : error), true);
   }
-  if (!response.ok) throw await httpFailure(response, cred.label);
+  if (!response.ok) {
+    disarm();
+    throw await httpFailure(response, cred.label);
+  }
   if (!(response.headers.get('content-type') ?? '').toLowerCase().includes('text/event-stream')) {
     throw new A2AError(`${cred.label} does not support A2A streaming (message/stream).`, false);
   }
@@ -368,12 +410,12 @@ export async function consumeA2AStream(options: {
       try {
         chunk = await reader.read();
       } catch (error) {
-        if ((error as Error)?.name === 'AbortError') {
-          throw new A2AError(`${cred.label} stream timed out.`, true);
-        }
+        if ((error as Error)?.name === 'AbortError') throw stalled();
         throw error;
       }
       if (chunk.done) break;
+      // Bytes arrived, so the stream is alive whatever it is working on.
+      armIdle();
       buffer += decoder.decode(chunk.value, { stream: true }).replace(/\r\n/g, '\n');
       let boundary = buffer.indexOf('\n\n');
       while (boundary >= 0) {
@@ -402,6 +444,7 @@ export async function consumeA2AStream(options: {
       }
     }
   } finally {
+    disarm();
     reader.releaseLock();
   }
   if (!received) throw new A2AError(`${cred.label} stream ended without events.`, true);
