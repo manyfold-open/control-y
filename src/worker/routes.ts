@@ -32,6 +32,13 @@ const DOCUMENT_MAX_CHARS = 400_000;
 const PROMPT_MAX_CHARS = 20_000;
 const FEEDBACK_MAX_CHARS = 40_000;
 
+/**
+ * How long one SSE write may stall before the run stops waiting for a reader.
+ * Comfortably longer than any real flush, far shorter than a single agent turn,
+ * so a live watcher is never dropped and a dead one never blocks the pass.
+ */
+const EMIT_STALL_MS = 5_000;
+
 /* ───────── request bodies ───────── */
 
 type Body = Record<string, unknown>;
@@ -410,10 +417,13 @@ ctrlY.put('/reviews/:id/memory/:entryId', async (c) => {
  * HTTP error, because `startPass` validates and claims the row before a byte of
  * the stream is written.
  *
- * If the browser goes away mid-run the invocation goes with it, and the pass row
- * is left running. The heartbeat that `startPass` keeps, and `reapStaleRuns` reads,
- * is what turns that into a failed pass a minute later instead of a review that can
- * never be run again.
+ * If the browser goes away mid-run the run carries on: waitUntil holds the
+ * invocation, and the outcome belongs on the pass row whether or not anyone is
+ * still watching. `emit` stops waiting for a reader that has gone (see below);
+ * without that bound the run blocks forever while its own heartbeat keeps
+ * declaring it healthy, which is precisely the latched row the heartbeat exists
+ * to prevent. If the invocation really is killed, the beat stops with it and
+ * `reapStaleRuns` fails the row a minute later.
  */
 ctrlY.post('/reviews/:id/passes', async (c) => {
   const started = await startPass(c.env, c.req.param('id'));
@@ -423,14 +433,39 @@ ctrlY.post('/reviews/:id/passes', async (c) => {
   const encoder = new TextEncoder();
   let clientGone = false;
 
+  // A closed tab is the common case, and workerd reports it here long before a
+  // write would notice.
+  c.req.raw.signal?.addEventListener('abort', () => {
+    clientGone = true;
+  });
+
   const emit = async (event: PassEvent) => {
     if (clientGone) return;
+    // A TransformStream writer applies backpressure: once nothing is reading the
+    // readable side, write() neither resolves nor rejects, it simply never
+    // settles. Awaiting it bare wedged the run on its first `stage` event, before
+    // a single agent had been asked anything, while the heartbeat kept beating
+    // from the same invocation waitUntil was holding open. reapStaleRuns reads
+    // beats, so it saw a healthy run and left the row latched for good.
+    //
+    // Bounding the wait is what makes "keep running, nobody is watching" true
+    // rather than aspirational.
+    const written = writer.write(encoder.encode(`data: ${JSON.stringify(event)}\n\n`));
+    written.catch(() => undefined); // the race below owns the outcome
+    let timer: ReturnType<typeof setTimeout> | null = null;
     try {
-      await writer.write(encoder.encode(`data: ${JSON.stringify(event)}\n\n`));
+      await Promise.race([
+        written,
+        new Promise((_, reject) => {
+          timer = setTimeout(() => reject(new Error('emit stalled')), EMIT_STALL_MS);
+        }),
+      ]);
     } catch {
       // The browser went away. Keep running: the outcome belongs on the pass row
       // whether or not anyone is still watching it arrive.
       clientGone = true;
+    } finally {
+      if (timer !== null) clearTimeout(timer);
     }
   };
 
