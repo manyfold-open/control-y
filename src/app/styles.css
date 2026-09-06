@@ -682,17 +682,22 @@ p { margin: 0; }
 .cv-unit { margin-left: 6px; color: var(--stone); font: 400 12px/1.4 var(--font-sans); white-space: nowrap; }
 
 /* ═══ Review detail ═════════════════════════════════════════════════════════
-   Full-height triage surface: one header band, then two independently scrolling
-   panes. Everything above the list is rent the list is paying, so the header
-   carries identity, the number, and the two actions. Nothing else. */
+   A queue, not a browser. An email client's list-beside-preview is built for
+   triage of unknown volume; this is a finite worklist with a known end state,
+   so the screen moves you through one decision at a time.
+
+   Three header bands ran to 144px before any work began. One bar carries what
+   you need while deciding — where you are, the number, the two actions — and
+   everything else is one control away. */
 
 .review { display: flex; flex-direction: column; height: 100%; min-height: 0; }
 
-.review-head { padding: var(--space-lg) var(--space-xxl) var(--space-sm); }
+.review-head { flex: none; }
 
-.review-head-top {
-  display: flex; align-items: flex-start; justify-content: space-between;
-  gap: var(--space-xl);
+.review-bar {
+  display: flex; align-items: center; gap: var(--space-md);
+  min-height: 52px;
+  padding: var(--space-xs) var(--space-xxl);
 }
 
 .review-identity { display: flex; align-items: baseline; gap: var(--space-xs); flex-wrap: wrap; }
@@ -705,33 +710,49 @@ p { margin: 0; }
 .crumb-sep { color: var(--muted-ink); }
 
 .review-title { font: 600 20px/1.3 var(--font-sans); letter-spacing: -0.3px; }
-.review-actions { display: flex; justify-content: flex-end; gap: var(--space-xs); flex-wrap: wrap; }
+.review-actions { display: flex; gap: var(--space-xs); margin-left: var(--space-xs); }
+
 /* Why the run button is dead, said on the page. A `title` cannot say it: a
    disabled control never fires one, so the reason was unreachable exactly when
-   it was needed. */
+   it was needed. Its own strip under the bar rather than a cell inside it, so a
+   long reason cannot push the buttons around. */
 .blocked-note {
-  flex-basis: 100%;
-  max-width: 44ch; margin-left: auto;
+  padding: 0 var(--space-xxl) var(--space-xs);
   color: var(--stone); font-size: 12px; line-height: 1.5; text-align: right;
 }
 
-.review-summary {
-  display: flex; align-items: baseline; gap: var(--space-sm);
-  margin-top: var(--space-xs);
-  flex-wrap: wrap;
+/* Counterparty, period and the document count: a fact you check, not one you
+   decide against. The control that opens them is also the one that edits them. */
+.bar-meta {
+  display: inline-flex; align-items: center; gap: 5px;
+  margin-left: auto;
+  padding: 5px 10px;
+  border: 1px solid transparent; border-radius: var(--rounded-md);
+  background: none; cursor: pointer;
+  color: var(--stone); font: 400 12px/1 var(--font-sans);
+  transition: background var(--motion), color var(--motion);
 }
+.bar-meta:hover { background: var(--surface); color: var(--ink); }
 
-.review-meta { color: var(--stone); font-size: 13px; }
-.summary-sep { align-self: center; width: 1px; height: 12px; background: var(--hairline); }
+/* The product's only number, with the per-agent breakdown behind it. */
+.bar-count {
+  display: inline-flex; align-items: center;
+  padding: 4px 10px;
+  border: 1px solid transparent; border-radius: var(--rounded-md);
+  background: none; cursor: pointer;
+  transition: background var(--motion), border-color var(--motion);
+}
+.bar-count:hover { background: var(--surface); }
+.bar-count.open { background: var(--surface); border-color: var(--hairline); }
 
 /* Each agent reports its own count — including zero, which is a real result.
    Behind a disclosure: how many findings merged into how many issues is the
    system's business, not the fund manager's. */
 .panel-strip {
   display: flex; gap: var(--space-lg); flex-wrap: wrap;
-  margin-top: var(--space-sm);
-  padding: var(--space-sm) 0 var(--space-xxs);
+  padding: var(--space-sm) var(--space-xxl);
   border-top: 1px solid var(--hairline-soft);
+  background: var(--surface-soft);
 }
 
 .panel-strip-item { display: flex; align-items: baseline; gap: var(--space-xs); font-size: 13px; }
@@ -740,12 +761,84 @@ p { margin: 0; }
 .panel-strip-item.memory .panel-strip-count { color: var(--settled); }
 .nothing { color: var(--muted-ink); font-size: 12px; font-weight: 400; }
 
-.review-toolbar {
-  display: flex; align-items: flex-end; justify-content: space-between;
-  gap: var(--space-md);
-  padding: 0 var(--space-xxl);
+/* ── Queue strip ────────────────────────────────────────────────────────────
+   What a 340px list pane was doing, in 22px. Bar height is severity, filled is
+   where you are, short and green is settled. It reads at four issues and still
+   reads at fifty, and it hands the width back to the work. */
+
+.queue-strip {
+  display: flex; align-items: center; gap: var(--space-md);
+  flex: none;
+  padding: var(--space-xs) var(--space-xxl);
+  border-top: 1px solid var(--hairline-soft);
+  border-bottom: 1px solid var(--hairline);
+  background: var(--surface-soft);
+}
+
+.queue-marks { display: flex; align-items: flex-end; gap: 3px; height: 18px; min-width: 0; overflow-x: auto; scrollbar-width: none; }
+.queue-marks::-webkit-scrollbar { display: none; }
+
+.queue-mark {
+  width: 8px; height: 9px; flex: none;
+  padding: 0; border: 0; border-radius: 2px;
+  background: var(--muted-ink);
+  opacity: 0.45;
+  cursor: pointer;
+  transition: height var(--motion), opacity var(--motion), background var(--motion);
+}
+.queue-mark:hover { opacity: 0.8; }
+.queue-mark.sev-material { background: var(--material); }
+.queue-mark.sev-question { background: var(--judgment); }
+.queue-mark.done { background: var(--settled); height: 5px; opacity: 0.4; }
+.queue-mark.current { height: 18px; opacity: 1; }
+
+.queue-pos { color: var(--steel); font: 400 12px/1 var(--font-mono); white-space: nowrap; }
+.queue-to { color: var(--stone); font: 400 12px/1 var(--font-sans); white-space: nowrap; }
+.queue-filter {
+  padding: 2px 8px; border-radius: var(--rounded-full);
+  background: var(--surface); color: var(--steel);
+  font: 400 11px/1.6 var(--font-sans); white-space: nowrap;
+}
+
+.queue-aside { display: flex; align-items: center; gap: var(--space-xs); margin-left: auto; }
+.queue-keys { display: flex; gap: 3px; }
+
+kbd {
+  display: inline-flex; align-items: center; justify-content: center;
+  min-width: 18px; height: 18px; padding: 0 4px;
+  border: 1px solid var(--hairline); border-bottom-width: 2px;
+  border-radius: var(--rounded-xs);
+  background: var(--canvas); color: var(--stone);
+  font: 500 10px/1 var(--font-mono);
+}
+
+/* ── The stage ──────────────────────────────────────────────────────────────
+   One issue, one column, one decision. */
+
+.review-stage { flex: 1; min-height: 0; overflow-y: auto; }
+
+/* ── The whole queue, on demand ─────────────────────────────────────────────
+   The glance the queue costs you, given back as a layer rather than a pane
+   that is present whether or not you are using it. */
+
+.queue-overlay {
+  position: fixed; top: 0; left: 0; bottom: 0; z-index: 31;
+  display: flex; flex-direction: column;
+  width: min(460px, 100vw);
+  background: var(--canvas);
+  border-right: 1px solid var(--hairline);
+  box-shadow: var(--elev-3);
+}
+
+.queue-overlay-head {
+  display: flex; align-items: flex-end; gap: var(--space-md);
+  flex: none;
+  padding: var(--space-md) var(--space-sm) 0 var(--space-lg);
   border-bottom: 1px solid var(--hairline);
 }
+.queue-overlay-head .icon-button { margin-bottom: var(--space-xs); }
+
+.queue-overlay-body { flex: 1; min-height: 0; overflow-y: auto; padding-bottom: var(--space-xxl); }
 
 .segmented { display: flex; gap: var(--space-xs); overflow-x: auto; scrollbar-width: none; }
 .segmented::-webkit-scrollbar { display: none; }
@@ -767,20 +860,7 @@ p { margin: 0; }
 .segment-count { color: var(--muted-ink); font: 400 13px/1.5 var(--font-mono); }
 .segment.active .segment-count { color: var(--steel); }
 
-.review-panes {
-  display: grid;
-  grid-template-columns: 404px minmax(0, 1fr);
-  flex: 1;
-  min-height: 0;
-}
-
-/* ── Issue list ── */
-
-.issue-list {
-  overflow-y: auto;
-  border-right: 1px solid var(--hairline);
-  padding-bottom: var(--space-xxl);
-}
+/* ── Issue rows, as the overlay lists them ── */
 
 .issue-group-head {
   position: sticky; top: 0; z-index: 2;
@@ -840,15 +920,12 @@ p { margin: 0; }
 /* ── Issue detail ── */
 
 .issue-detail {
-  overflow-y: auto;
   padding: var(--space-xl) max(var(--space-xxl), (100% - var(--measure-detail)) / 2)
     var(--space-section);
   display: grid;
   align-content: start;
   gap: var(--space-xl);
 }
-
-.issue-detail.empty { background: var(--surface-soft); }
 
 .detail-head { display: grid; gap: var(--space-xs); }
 .detail-head-row { display: flex; align-items: center; gap: var(--space-xs); flex-wrap: wrap; }
@@ -1440,10 +1517,6 @@ input:focus-visible, textarea:focus-visible, select:focus-visible {
 
 /* ═══ Responsive ════════════════════════════════════════════════════════════ */
 
-@media (max-width: 1180px) {
-  .review-panes { grid-template-columns: 340px minmax(0, 1fr); }
-}
-
 @media (max-width: 940px) {
   .app { grid-template-columns: 64px minmax(0, 1fr); }
   .rail { padding: var(--space-md) var(--space-xs); }
@@ -1452,10 +1525,8 @@ input:focus-visible, textarea:focus-visible, select:focus-visible {
   .rail-brand { justify-content: center; padding: var(--space-xxs) 0 var(--space-md); }
   .rail-foot { justify-content: center; }
 
-  /* Triage collapses to one column: list, then detail below it. */
-  .review-panes { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto 1fr; }
-  .issue-list { border-right: 0; border-bottom: 1px solid var(--hairline); max-height: 42vh; }
   .issue-detail { padding-inline: var(--space-lg); }
+  .queue-overlay { width: 100vw; border-right: 0; }
 
   .page { padding: var(--space-xl) var(--space-lg) var(--space-section); }
   /* Stack the title above its action, but the action keeps its own width. A
@@ -1463,25 +1534,21 @@ input:focus-visible, textarea:focus-visible, select:focus-visible {
   .page-head { flex-direction: column; align-items: flex-start; gap: var(--space-md); }
   .review-head { padding: var(--space-md) var(--space-lg) var(--space-xs); }
 
-  /* The title and its two actions stop fitting one line: stack them rather than
-     push "Run pass" off the right edge. */
-  .review-head-top { flex-direction: column; align-items: stretch; gap: var(--space-sm); }
-  .review-actions { flex-wrap: wrap; }
-  .review-actions .button { flex: 1 1 auto; justify-content: center; }
-  .review-summary { row-gap: var(--space-xs); }
-  .summary-sep { display: none; }
+  /* The bar stops fitting one line: let it wrap rather than push "Run pass"
+     off the right edge. The number keeps its place beside the title. */
+  .review-bar { flex-wrap: wrap; row-gap: var(--space-xs); }
+  .review-identity { flex: 1 1 100%; }
+  .bar-meta { margin-left: 0; }
+  .review-actions { margin-left: auto; }
   .dialog-foot { justify-content: stretch; }
   .dialog-foot .button { flex: 1 1 auto; justify-content: center; }
   .dialog-foot .button.danger, .dialog-foot .button.danger-outline { flex-basis: 100%; margin-right: 0; }
-  .review-toolbar {
-    flex-direction: column;
-    align-items: stretch;
-    gap: var(--space-xs);
-    padding: var(--space-xs) var(--space-lg) 0;
-  }
-  .segmented { order: 2; }
+  .review-bar, .queue-strip, .panel-strip { padding-inline: var(--space-lg); }
+  .queue-to, .queue-keys { display: none; }
   .table-head { display: none; }
   .review-row, .people-row { grid-template-columns: minmax(0, 1fr); gap: var(--space-xs); }
   .review-row-updated { text-align: left; }
   .button { padding: 10px 18px; }
 }
+
+.file-preview-note { color: var(--stone); font-size: 12px; line-height: 1.5; }

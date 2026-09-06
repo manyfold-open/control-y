@@ -64,12 +64,20 @@ const MAX_ISSUES_PER_PASS = 200;
 /* ───────── one A2A turn ───────── */
 
 /**
- * One uploaded file, as the agent receives it: a presigned R2 URL it fetches for
- * itself, rather than bytes inlined into the JSON-RPC body.
+ * One uploaded file, as the agent is offered it.
  *
- * That URL is a bearer capability handed to a third party — anyone holding it can
- * read that document until it expires. `FETCH_URL_TTL_SECONDS` is sized to a pass
- * and no longer, and the URLs are minted per pass, not stored.
+ * MEASURED, 5 Sept 2026: Manyfold agents do not receive A2A `file` parts at all.
+ * Asked to review a PDF stating a 1.95% fee against a 1.25% cap in the same
+ * document, every reviewer returned nothing found, and one said so outright —
+ * "I can't actually see any content from Q3 2026 fee schedule.pdf — the message
+ * only contains a placeholder tag". That was true of `bytes` and of `uri`
+ * alike, and was equally true before uploads moved to R2.
+ *
+ * The part is still sent, as a `uri`: it costs a couple of hundred bytes and
+ * starts working by itself the day agents honour attachments, whereas inlining
+ * `bytes` would put megabytes into every reviewer's request body for nothing.
+ * What the reviewer is TOLD about the file is the honest part — see
+ * `documentsBlock`, which must not claim the contents are available.
  */
 interface Attachment {
   uri: string;
@@ -78,19 +86,27 @@ interface Attachment {
 }
 
 /**
- * Signs every file on a review once for the whole pass. Per reviewer would mint
- * the same URL five times over, and inlining the bytes (as this did before R2)
- * re-serialised every file into every reviewer's request body.
+ * Signed once per pass, not once per reviewer, and returned two ways: as the A2A
+ * file parts, and as a key -> url map for `documentsBlock` to write into the
+ * prompt text. The same URL serves both, so a reviewer sees one link, not two.
  */
-async function attachmentsFor(env: Env, documents: PanelDocument[]): Promise<Attachment[]> {
+async function attachmentsFor(
+  env: Env,
+  documents: PanelDocument[],
+): Promise<{ attachments: Attachment[]; urls: Map<string, string> }> {
   const files = documents.filter((document) => document.kind === 'file');
-  return Promise.all(
+  const signed = await Promise.all(
     files.map(async (document) => ({
+      key: document.key,
       uri: await presignFetch(env, document.key),
       mediaType: document.mediaType,
       name: document.name,
     })),
   );
+  return {
+    attachments: signed.map(({ uri, mediaType, name }) => ({ uri, mediaType, name })),
+    urls: new Map(signed.map(({ key, uri }) => [key, uri])),
+  };
 }
 
 /** Resolves the connected Manyfold agent one prompt runs on. */
@@ -260,12 +276,29 @@ const indent = (block: string, by: number): string =>
     .map((line) => `${' '.repeat(by)}${line}`)
     .join('\n');
 
-function documentsBlock(docs: PanelDocument[]): string {
+/**
+ * The documents, as prose in the prompt.
+ *
+ * A file gets its download URL written into the text. The A2A `file` part is
+ * dropped before the model ever sees it, but the text part plainly is not — an
+ * agent quoted our placeholder back at us — so the text is the only channel that
+ * reaches it. An agent that can fetch a URL can now read the document; one that
+ * cannot is told so in the same breath, and told not to report clean over it.
+ *
+ * The URL is a bearer capability, and putting it in the prompt puts it wherever
+ * the agent's transcript goes. It expires in an hour and grants read on one
+ * object, which is the same grant the `file` part carried — only now somewhere
+ * it can actually be used.
+ */
+function documentsBlock(docs: PanelDocument[], urls: Map<string, string>): string {
   let budget = DOC_CHARS_TOTAL;
   return docs
     .map((doc) => {
       if (doc.kind === 'file') {
-        return `### ${doc.name}\n[attached to the message as a ${doc.mediaType} file]`;
+        const url = urls.get(doc.key);
+        return url
+          ? `### ${doc.name}\nA ${doc.mediaType} file. Its contents are not inlined here, so download it yourself:\n${url}\nThe link works for one hour and needs no credentials. If you cannot fetch it, say so and do not report this document as reviewed.`
+          : `### ${doc.name}\n[a ${doc.mediaType} file is held with this review, but its contents are NOT available to you. Do not treat it as reviewed, and say so if a finding would depend on it.]`;
       }
       const room = Math.min(DOC_CHARS_EACH, budget);
       budget -= room;
@@ -602,6 +635,10 @@ async function runPass(
       .map((link) => ({ batch, link, issue: issues.find((i) => i.id === link.issueId) })),
   );
 
+  // Signed before the context is built: the links go into the prompt text, which
+  // is the only channel that reaches the model.
+  const { attachments, urls } = await attachmentsFor(env, documents);
+
   const ctx: PassContext = {
     header: `THE REVIEW\n${review.name} · prepared by ${review.counterparty || 'a third party'} · ${review.period || 'no period stated'}`,
     memory: applied.length
@@ -609,7 +646,7 @@ async function runPass(
           applied.map((entry) => `[${entry.id}] [${entry.kind}] ${entry.text}`),
         )}`
       : '',
-    documents: documentsBlock(documents),
+    documents: documentsBlock(documents, urls),
     carried: carriedIn.length
       ? `ISSUES CARRIED IN FROM THE LAST PASS\n${bullet(
           carriedIn.map(
@@ -627,9 +664,6 @@ async function runPass(
         )}`
       : '',
   };
-
-  // Signed once, before the fan-out, and shared by every reviewer in this pass.
-  const attachments = await attachmentsFor(env, documents);
 
   await emit({ type: 'stage', stage: 'reviewers', done: 0, total: enabled.length });
   let answered = 0;
@@ -649,10 +683,20 @@ async function runPass(
       const payload = parsePayload<{ findings?: unknown }>(reply);
       const raw = Array.isArray(payload?.findings) ? payload.findings : null;
       if (!raw) {
+        // Carry an excerpt of what it actually said. An agent that answers in
+        // prose is usually explaining itself — that it could not read a document,
+        // or is refusing — and discarding that left the pass strip saying only
+        // "did not answer", which is the least useful true thing to report.
+        const excerpt = safeErrorText(reply).replace(/\s+/g, ' ').trim().slice(0, 240);
         return {
           agent,
           findings: [] as Record<string, unknown>[],
-          result: await report({ key: agent.key, name: agent.name, findings: null, error: 'Reply was not the expected JSON.' }),
+          result: await report({
+            key: agent.key,
+            name: agent.name,
+            findings: null,
+            error: excerpt ? `Reply was not the expected JSON. It said: "${excerpt}"` : 'Reply was not the expected JSON.',
+          }),
         };
       }
       const findings = raw.slice(0, 60).filter((f): f is Record<string, unknown> => !!f && typeof f === 'object');

@@ -102,7 +102,7 @@ export async function unseal(env: Env, ciphertext: string, iv: string): Promise<
     // Reached after the key material changes: old ciphertext can never be read again,
     // so the user has to authorize the agent once more.
     throw new ConfigError(
-      'Could not decrypt a stored credential — the encryption key changed. Connect your agent again.',
+      'Could not decrypt a stored credential: the encryption key changed. Connect your agent again.',
     );
   }
 }
