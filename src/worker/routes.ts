@@ -13,6 +13,7 @@ import type { MemoryKind, PassEvent, Severity, Workspace } from '../shared/types
 import { HttpError, type Env } from './types';
 import { linkFeedback, panelReady, startPass, startRetrospective } from './panel';
 import { listConnectedAgents } from './connect';
+import { eventStream, eventStreamHeaders } from './sse';
 import {
   MAX_UPLOAD_BYTES,
   UPLOAD_URL_TTL_SECONDS,
@@ -31,13 +32,6 @@ const REVIEW_STATUSES = ['open', 'closed'] as const;
 const DOCUMENT_MAX_CHARS = 400_000;
 const PROMPT_MAX_CHARS = 20_000;
 const FEEDBACK_MAX_CHARS = 40_000;
-
-/**
- * How long one SSE write may stall before the run stops waiting for a reader.
- * Comfortably longer than any real flush, far shorter than a single agent turn,
- * so a live watcher is never dropped and a dead one never blocks the pass.
- */
-const EMIT_STALL_MS = 5_000;
 
 /* ───────── request bodies ───────── */
 
@@ -417,83 +411,37 @@ ctrlY.put('/reviews/:id/memory/:entryId', async (c) => {
  * HTTP error, because `startPass` validates and claims the row before a byte of
  * the stream is written.
  *
- * If the browser goes away mid-run the run carries on: waitUntil holds the
- * invocation, and the outcome belongs on the pass row whether or not anyone is
- * still watching. `emit` stops waiting for a reader that has gone (see below);
- * without that bound the run blocks forever while its own heartbeat keeps
- * declaring it healthy, which is precisely the latched row the heartbeat exists
- * to prevent. If the invocation really is killed, the beat stops with it and
- * `reapStaleRuns` fails the row a minute later.
+ * Because the response is the run's life support, the stream must never look
+ * dead — and a pass is mostly silence, since agents do not stream while they
+ * think. `eventStream` puts a keep-alive comment on the wire every ten seconds
+ * for exactly that reason; without it two passes on this workspace were dropped
+ * at 60s having heard from nobody. It also stops waiting for a reader that has
+ * gone, so a closed tab delays the run by one event rather than wedging it.
+ *
+ * If the browser goes away mid-run the run carries on as far as it can: waitUntil
+ * holds the invocation, and the outcome belongs on the pass row whether or not
+ * anyone is still watching. If the invocation really is killed, the beat stops
+ * with it and `reapStaleRuns` fails the row a minute later.
  */
 ctrlY.post('/reviews/:id/passes', async (c) => {
   const started = await startPass(c.env, c.req.param('id'));
-
-  const { readable, writable } = new TransformStream();
-  const writer = writable.getWriter();
-  const encoder = new TextEncoder();
-  let clientGone = false;
-
-  // A closed tab is the common case, and workerd reports it here long before a
-  // write would notice.
-  c.req.raw.signal?.addEventListener('abort', () => {
-    clientGone = true;
-  });
-
-  const emit = async (event: PassEvent) => {
-    if (clientGone) return;
-    // A TransformStream writer applies backpressure: once nothing is reading the
-    // readable side, write() neither resolves nor rejects, it simply never
-    // settles. Awaiting it bare wedged the run on its first `stage` event, before
-    // a single agent had been asked anything, while the heartbeat kept beating
-    // from the same invocation waitUntil was holding open. reapStaleRuns reads
-    // beats, so it saw a healthy run and left the row latched for good.
-    //
-    // Bounding the wait is what makes "keep running, nobody is watching" true
-    // rather than aspirational.
-    const written = writer.write(encoder.encode(`data: ${JSON.stringify(event)}\n\n`));
-    written.catch(() => undefined); // the race below owns the outcome
-    let timer: ReturnType<typeof setTimeout> | null = null;
-    try {
-      await Promise.race([
-        written,
-        new Promise((_, reject) => {
-          timer = setTimeout(() => reject(new Error('emit stalled')), EMIT_STALL_MS);
-        }),
-      ]);
-    } catch {
-      // The browser went away. Keep running: the outcome belongs on the pass row
-      // whether or not anyone is still watching it arrive.
-      clientGone = true;
-    } finally {
-      if (timer !== null) clearTimeout(timer);
-    }
-  };
+  const stream = eventStream<PassEvent>(c.req.raw.signal);
 
   const run = (async () => {
     try {
       // Flushed first so intermediaries commit to streaming, and so the browser
       // has the pass the moment it exists rather than when the run ends.
-      await emit({ type: 'start', pass: started.pass });
-      await started.run(emit);
+      await stream.emit({ type: 'start', pass: started.pass });
+      await started.run(stream.emit);
     } finally {
-      try {
-        await writer.close();
-      } catch {
-        /* already closed or client gone */
-      }
+      await stream.close();
     }
   })();
   // Only covers the tail after a disconnect; the open response is what carries the
   // run itself.
   c.executionCtx.waitUntil(run);
 
-  return new Response(readable, {
-    headers: {
-      'content-type': 'text/event-stream',
-      'cache-control': 'no-store',
-      'x-accel-buffering': 'no',
-    },
-  });
+  return new Response(stream.readable, { headers: eventStreamHeaders });
 });
 
 /* ── issues ── */
