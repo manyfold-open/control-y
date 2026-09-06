@@ -761,6 +761,39 @@ p { margin: 0; }
 .panel-strip-item.memory .panel-strip-count { color: var(--settled); }
 .nothing { color: var(--muted-ink); font-size: 12px; font-weight: 400; }
 
+/* While a pass runs the same block becomes a list: one row per agent, its own
+   account of itself, and how long it has been at it. It is the only thing on the
+   page that moves, and it lasts only as long as the run. */
+.panel-strip.live { display: grid; gap: 3px; }
+
+.panel-strip-stage {
+  margin-bottom: var(--space-xxs);
+  color: var(--stone); font-size: 12px;
+}
+
+.panel-strip-row {
+  display: grid;
+  grid-template-columns: minmax(0, 220px) max-content minmax(0, 1fr) max-content;
+  align-items: baseline;
+  gap: var(--space-sm);
+  font-size: 13px;
+}
+
+.panel-strip-state { color: var(--steel); font-size: 12px; }
+
+/* One line, whatever the agent sends. A reviewer that writes a paragraph about
+   itself must not reflow the header the issue list sits under. */
+.panel-strip-note {
+  min-width: 0;
+  color: var(--muted-ink); font-size: 12px;
+  overflow: hidden; white-space: nowrap; text-overflow: ellipsis;
+}
+
+.panel-strip-elapsed {
+  justify-self: end;
+  color: var(--muted-ink); font-family: var(--font-mono); font-size: 12px;
+}
+
 /* ── Queue strip ────────────────────────────────────────────────────────────
    What a 340px list pane was doing, in 22px. Bar height is severity, filled is
    where you are, short and green is settled. It reads at four issues and still

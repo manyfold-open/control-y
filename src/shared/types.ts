@@ -243,6 +243,13 @@ export interface Pass {
 export type PassEvent =
   | { type: 'start'; pass: Pass }
   | { type: 'stage'; stage: 'reviewers' | 'consolidator'; done: number; total: number }
+  /**
+   * One agent's own account of itself, mid-turn: the A2A task state, and whatever
+   * status text it chose to send with it. `key` is the panel agent's key, so the
+   * consolidator reports through this too. Both fields are the agent's words and
+   * not ours — `note` is sanitised and capped before it is sent.
+   */
+  | { type: 'progress'; key: string; name: string; state: string; note: string }
   | { type: 'agent'; key: string; name: string; findings: number | null; error: string | null }
   | { type: 'done'; openCount: number | null }
   | { type: 'error'; message: string };

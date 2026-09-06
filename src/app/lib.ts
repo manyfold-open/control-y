@@ -147,6 +147,13 @@ export function formatWhen(iso: string): string {
   return `${formatDay(iso)}, ${time}`;
 }
 
+/** How long an agent has been at it: "8s", then "1m 04s". Seconds, never "a while". */
+export function formatElapsed(ms: number): string {
+  const total = Math.max(0, Math.round(ms / 1000));
+  if (total < 60) return `${total}s`;
+  return `${Math.floor(total / 60)}m ${String(total % 60).padStart(2, '0')}s`;
+}
+
 export function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`;

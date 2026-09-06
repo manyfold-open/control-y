@@ -10,12 +10,13 @@
  * review is polled. Nothing else here is live.
  */
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type {
   FeedbackBatch,
   Issue,
   MemoryKind,
   Pass,
+  PassEvent,
   ReviewDetail,
   RosterEntry,
   ScopedMemoryEntry,
@@ -25,7 +26,17 @@ import type {
 import { composeLetter } from '../../shared/letter';
 import { authHeaders, send } from '../api';
 import { streamPass } from '../sse';
-import { errorText, formatBytes, formatWhen, initials, useCopy, usePoll, useResource, type CopyLabel } from '../lib';
+import {
+  errorText,
+  formatBytes,
+  formatElapsed,
+  formatWhen,
+  initials,
+  useCopy,
+  usePoll,
+  useResource,
+  type CopyLabel,
+} from '../lib';
 import { evidenceText } from '../../shared/evidence';
 import Convergence from '../components/Convergence';
 import Icon from '../components/Icon';
@@ -72,6 +83,130 @@ const countUndecided = (feedback: FeedbackBatch[]): number =>
     .flatMap((batch) => batch.links)
     .filter((link) => !link.decision).length;
 
+/* ── The panel at work ─────────────────────────────────────────────────────── */
+
+/**
+ * The run as it happens: which reviewers are reading, what each says it is doing,
+ * and what it came back with.
+ *
+ * None of it is persisted, and none of it should be. A pass lives only as long as
+ * the connection carrying it — leaving the page stops the run — so there would be
+ * nothing to show after a reload, and the pass row, which is the record, already
+ * says how it ended.
+ */
+interface LiveAgent {
+  name: string;
+  /** The A2A task state, verbatim. Empty until the agent has been asked at all. */
+  state: string;
+  /** The agent's own progress text, when it sent one. */
+  note: string;
+  findings: number | null;
+  error: string | null;
+  startedAt: number | null;
+  finishedAt: number | null;
+}
+
+interface LiveRun {
+  stage: 'reviewers' | 'consolidator';
+  done: number;
+  total: number;
+  /** The reviewers in the order the pass listed them, then the consolidator. */
+  order: string[];
+  agents: Record<string, LiveAgent>;
+}
+
+const queued = (name: string): LiveAgent => ({
+  name,
+  state: '',
+  note: '',
+  findings: null,
+  error: null,
+  startedAt: null,
+  finishedAt: null,
+});
+
+/** Folds one streamed event into the live view. Pure — the caller owns the state. */
+export function applyPassEvent(live: LiveRun | null, event: PassEvent, atMs: number): LiveRun | null {
+  if (event.type === 'start') {
+    return {
+      stage: 'reviewers',
+      done: 0,
+      total: event.pass.agents.length,
+      order: event.pass.agents.map((agent) => agent.key),
+      agents: Object.fromEntries(event.pass.agents.map((agent) => [agent.key, queued(agent.name)])),
+    };
+  }
+  if (!live) return live;
+
+  if (event.type === 'stage') {
+    return { ...live, stage: event.stage, done: event.done, total: event.total };
+  }
+  if (event.type === 'progress' || event.type === 'agent') {
+    // The consolidator is not in the roster the pass started with, so it joins the
+    // order the first time it reports.
+    const known = live.agents[event.key] ?? queued(event.name);
+    const next: LiveAgent =
+      event.type === 'progress'
+        ? { ...known, state: event.state, note: event.note, startedAt: known.startedAt ?? atMs }
+        : { ...known, findings: event.findings, error: event.error, finishedAt: atMs };
+    return {
+      ...live,
+      order: live.order.includes(event.key) ? live.order : [...live.order, event.key],
+      agents: { ...live.agents, [event.key]: next },
+    };
+  }
+  return live;
+}
+
+/** What one row says of itself. One label, and only where it earns one. */
+export function liveStatus(agent: LiveAgent): { label: string; className: string } {
+  if (agent.findings !== null) {
+    return agent.findings === 0
+      ? { label: 'nothing found', className: 'nothing' }
+      : { label: String(agent.findings), className: 'tnum panel-strip-count' };
+  }
+  if (agent.error) return { label: 'did not answer', className: 'nothing' };
+  if (agent.state === 'working') return { label: 'reading', className: 'panel-strip-state' };
+  if (agent.state === 'submitted') return { label: 'sent', className: 'panel-strip-state' };
+  // Anything else an agent calls itself is shown as it said it, rather than guessed at.
+  if (agent.state) return { label: agent.state, className: 'panel-strip-state' };
+  return { label: 'queued', className: 'nothing' };
+}
+
+function PanelAtWork({ live }: { live: LiveRun }) {
+  // One tick a second, and only while this is mounted: the elapsed figures are the
+  // only thing on the page that moves by itself.
+  const [, setTick] = useState(0);
+  usePoll(true, 1000, () => setTick((count) => count + 1));
+  const atMs = Date.now();
+
+  return (
+    <div className="panel-strip live">
+      <p className="panel-strip-stage">
+        {live.stage === 'consolidator'
+          ? 'Consolidator — merging what the panel found'
+          : `Reviewers — ${live.done} of ${live.total} answered`}
+      </p>
+      {live.order.map((key) => {
+        const agent = live.agents[key];
+        if (!agent) return null;
+        const status = liveStatus(agent);
+        const settled = agent.findings !== null || agent.error !== null;
+        return (
+          <div key={key} className="panel-strip-row">
+            <span className="panel-strip-name">{agent.name}</span>
+            <span className={status.className}>{status.label}</span>
+            <span className="panel-strip-note">{settled ? '' : agent.note}</span>
+            <span className="panel-strip-elapsed tnum">
+              {agent.startedAt === null ? '' : formatElapsed((agent.finishedAt ?? atMs) - agent.startedAt)}
+            </span>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 export default function ReviewDetailView({
   reviewId,
   workspace,
@@ -95,6 +230,10 @@ export default function ReviewDetailView({
   const [busy, setBusy] = useState(false);
   /** Only the gap between pressing Run and the pass existing; `running` takes over. */
   const [passStarting, setPassStarting] = useState(false);
+  /** The pass as it happens, or null when this tab is not watching one. */
+  const [live, setLive] = useState<LiveRun | null>(null);
+  /** Whether the panel disclosure was open before a run forced it open. */
+  const wasOpen = useRef(false);
   const [actionError, setActionError] = useState('');
   const [copyLabel, copy] = useCopy();
 
@@ -239,7 +378,9 @@ export default function ReviewDetailView({
    *
    * The stream carries progress, not content — the poll re-reads the review, the
    * same as after any other write. The first event says the pass exists, which is
-   * what starts that poll; the last says it finished, or says why it did not.
+   * what starts that poll; the last says it finished, or says why it did not. What
+   * arrives in between is the panel at work, held in `live` and dropped at the end:
+   * the pass row is the record, and this is only the wait made legible.
    *
    * Deliberately not run through `act`: that holds `busy` for the whole call, and a
    * pass takes minutes. Assigning an issue or copying a letter must stay possible
@@ -250,19 +391,36 @@ export default function ReviewDetailView({
     setPassStarting(true);
     setActionError('');
     let failure = '';
+    /** Takes the live view down and gives the disclosure back as it was found. */
+    const endLive = () => {
+      setLive(null);
+      setPassOpen(wasOpen.current);
+    };
     try {
       await streamPass(review.id, (event) => {
         if (event.type === 'start') {
           setPassStarting(false);
+          // Opened for the run, and put back the way it was found afterwards: a
+          // disclosure the user closed should not stay open because a pass ran.
+          wasOpen.current = passOpen;
+          setPassOpen(true);
           void reload(true);
           void reloadWorkspace(true);
         }
         if (event.type === 'error') failure = event.message;
+        // `done` and `error` end the pass by contract, whatever the socket does
+        // next. Taking the live view down when the stream closed instead left a
+        // finished pass on screen still reading, seconds still counting, for as
+        // long as the connection lingered — which was minutes.
+        if (event.type === 'done' || event.type === 'error') endLive();
+        else setLive((current) => applyPassEvent(current, event, Date.now()));
       });
     } catch (caught) {
       failure = errorText(caught);
     } finally {
       setPassStarting(false);
+      // A stream that died without a terminal event still has to release the view.
+      endLive();
     }
     await reload(true);
     await reloadWorkspace(true);
@@ -327,7 +485,9 @@ export default function ReviewDetailView({
 
         {blockedReason !== '' && <p className="blocked-note">{blockedReason}</p>}
 
-        {passOpen && (
+        {passOpen && live && <PanelAtWork live={live} />}
+
+        {passOpen && !live && (
           <div className="panel-strip">
             {strip ? (
               strip.agents.map((agent) => (

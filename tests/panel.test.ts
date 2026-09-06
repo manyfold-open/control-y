@@ -6,6 +6,7 @@ import {
   consolidateIssues,
   parseLessons,
   parsePayload,
+  progressUpdate,
 } from '../src/worker/panel';
 import type { Issue } from '../src/shared/types';
 
@@ -293,5 +294,55 @@ describe('parseLessons', () => {
   it('caps how many rules one close-out can propose', () => {
     const many = Array.from({ length: 40 }, (_, index) => ({ text: `rule ${index}`, basis: ['TZ-001'] }));
     expect(parseLessons(many, lessonCtx).length).toBeLessThanOrEqual(12);
+  });
+});
+
+describe('progressUpdate', () => {
+  const nothingSaidYet = { state: '', note: '', at: 0 };
+  const working = (progressText = '') => ({ state: 'working', progressText, terminal: false });
+
+  it('reports the first state an agent gives', () => {
+    expect(progressUpdate(nothingSaidYet, working('Reading staging.xlsx'), 1000)).toEqual({
+      state: 'working',
+      note: 'Reading staging.xlsx',
+    });
+  });
+
+  it('says nothing about a terminal snapshot — the agent event reports that outcome', () => {
+    const done = { state: 'completed', progressText: 'Finished', terminal: true };
+    expect(progressUpdate(nothingSaidYet, done, 1000)).toBeNull();
+  });
+
+  it('says nothing when the turn has no state to report', () => {
+    expect(progressUpdate(nothingSaidYet, { state: '', progressText: 'x', terminal: false }, 1000)).toBeNull();
+  });
+
+  it('says nothing when the state and the note both repeat', () => {
+    const last = { state: 'working', note: 'Reading', at: 1000 };
+    expect(progressUpdate(last, working('Reading'), 9000)).toBeNull();
+  });
+
+  it('lets a state change through however soon it arrives', () => {
+    const last = { state: 'submitted', note: '', at: 1000 };
+    expect(progressUpdate(last, working(), 1001)).toEqual({ state: 'working', note: '' });
+  });
+
+  it('rate limits note churn under an unchanged state', () => {
+    const last = { state: 'working', note: 'Reading page 1', at: 1000 };
+    expect(progressUpdate(last, working('Reading page 2'), 1050)).toBeNull();
+    expect(progressUpdate(last, working('Reading page 2'), 1400)).toEqual({
+      state: 'working',
+      note: 'Reading page 2',
+    });
+  });
+
+  it('redacts a token an agent puts in its own progress text', () => {
+    const leaky = working('Fetching with Bearer sk-live-abcdef123456');
+    expect(progressUpdate(nothingSaidYet, leaky, 1000)?.note).toBe('Fetching with Bearer [redacted]');
+  });
+
+  it('caps a note long enough to reflow the header', () => {
+    const note = progressUpdate(nothingSaidYet, working('x'.repeat(5000)), 1000)?.note ?? '';
+    expect(note.length).toBe(200);
   });
 });
