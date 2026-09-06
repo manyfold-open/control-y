@@ -1370,9 +1370,20 @@ code {
   overflow-y: auto;
   padding: var(--space-lg) var(--space-xl);
   display: grid;
-  align-content: start; /* Without this the rows stretch to fill a container
-                           that flex:1 already made taller than its content,
-                           and every label grows a hundred pixels of air. */
+  /* Two opposite failures of the same grid, one line each.
+
+     align-content: without it short content stretches to fill a container that
+     flex:1 already made taller than it, and every label grows a hundred pixels
+     of air.
+
+     grid-auto-rows: without it long content is crushed into that same height.
+     An auto row's base size is its items' minimum height, and a .correspondent
+     clips its own overflow, which makes that minimum zero — so the rows were
+     handed only the height that was going spare, and an expanded reply was cut
+     off mid-sentence with nothing to scroll to the rest of it. Sized to their
+     content the rows overflow instead, which is what this box scrolls. */
+  grid-auto-rows: max-content;
+  align-content: start;
   gap: var(--space-sm);
 }
 
