@@ -1484,8 +1484,8 @@ function FeedbackDrawer({
                     <span className="correspondent-org">{entry.person.org}</span>
                   </span>
                   <span className="correspondent-state">
-                    <span className="correspondent-refs tnum">
-                      {entry.issues.map((issue) => issue.ref).join(' · ')}
+                    <span className="correspondent-owed tnum">
+                      {entry.issues.length} {entry.issues.length === 1 ? 'issue' : 'issues'}
                     </span>
                     {entry.undecided > 0 ? (
                       <span className="tag judgment">{entry.undecided} to decide</span>
@@ -1500,6 +1500,10 @@ function FeedbackDrawer({
 
                 {isOpen && (
                   <div className="correspondent-body">
+                    <p className="correspondent-owed-refs tnum">
+                      {entry.issues.map((issue) => issue.ref).join(' · ')}
+                    </p>
+
                     {entry.batches.map((batch) => (
                       <FeedbackBatchCard
                         key={batch.id}

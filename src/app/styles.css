@@ -1212,18 +1212,35 @@ code {
 
 .avatar.quiet { background: var(--surface); color: var(--steel); }
 
-.correspondent-id { display: grid; gap: 1px; min-width: 0; }
+/* The identity takes the slack; the state keeps its own width. Without the
+   flex pair a long ref list pushed the name down to one word a line and then
+   painted over the org beneath it. */
+.correspondent-id { flex: 1; min-width: 0; display: grid; gap: 1px; }
+.correspondent-name, .correspondent-org {
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
 .correspondent-name { color: var(--ink); font: 500 14px/1.35 var(--font-sans); }
 .correspondent-org { color: var(--stone); font: 400 12px/1.35 var(--font-sans); }
 
 .correspondent-state {
   display: flex; align-items: center; gap: var(--space-xs);
-  margin-left: auto;
+  flex: none;
+  white-space: nowrap;
   font: 400 12px/1 var(--font-sans);
 }
-.correspondent-refs { color: var(--muted-ink); font-family: var(--font-mono); white-space: nowrap; }
+
+/* How many are owed, not which. A ref list is unbounded — six already stops
+   being scannable — and the refs are one click away, next to the box that
+   answers them. */
+.correspondent-owed { color: var(--steel); font-family: var(--font-mono); }
 .correspondent-done { color: var(--settled); }
 .correspondent-wait { color: var(--stone); }
+
+.correspondent-owed-refs {
+  color: var(--muted-ink);
+  font: 400 12px/1.7 var(--font-mono);
+  overflow-wrap: anywhere;
+}
 
 .correspondent-body {
   display: grid;
