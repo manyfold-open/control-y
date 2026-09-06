@@ -19,6 +19,8 @@ const paths: Record<string, string> = {
      both states. */
   chevron: 'M5.5 8 10 12.5 14.5 8',
   edit: 'M13.7 3.8a1.7 1.7 0 0 1 2.4 2.4l-9 9-3.3.9.9-3.3z M12.5 5l2.5 2.5',
+  /* The whole queue at once, for stepping out of it. */
+  list: 'M4 5.5h12 M4 10h12 M4 14.5h12',
   /* A target, for whether an entry is aimed at the review being run. */
   scope: 'M10 16.5a6.5 6.5 0 1 0 0-13 6.5 6.5 0 0 0 0 13z M10 12.5a2.5 2.5 0 1 0 0-5 2.5 2.5 0 0 0 0 5z',
 };

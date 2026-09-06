@@ -10,7 +10,7 @@
  * review is polled. Nothing else here is live.
  */
 
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import type {
   FeedbackBatch,
   Issue,
@@ -89,6 +89,7 @@ export default function ReviewDetailView({
   const [selectedId, setSelectedId] = useState('');
   const [passOpen, setPassOpen] = useState(false);
   const [drawerOpen, setDrawerOpen] = useState(false);
+  const [overlayOpen, setOverlayOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   /** Only the gap between pressing Run and the pass existing; `running` takes over. */
@@ -163,6 +164,37 @@ export default function ReviewDetailView({
       .filter((group) => group.issues.length > 0);
   }, [visible, data, selfId]);
 
+  /* Arrow keys walk the queue. Reaching for the mouse to advance would make
+     this a list with extra steps. Typing into a field always wins, and so does
+     anything layered over the queue. */
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if (event.metaKey || event.ctrlKey || event.altKey) return;
+      if (overlayOpen || drawerOpen || settingsOpen) return;
+
+      const target = event.target as HTMLElement | null;
+      if (target && (/^(INPUT|TEXTAREA|SELECT)$/.test(target.tagName) || target.isContentEditable)) return;
+
+      const step =
+        event.key === 'ArrowDown' || event.key === 'j'
+          ? 1
+          : event.key === 'ArrowUp' || event.key === 'k'
+            ? -1
+            : 0;
+      if (step === 0 || visible.length === 0) return;
+
+      event.preventDefault();
+      setSelectedId((current) => {
+        const at = visible.findIndex((issue) => issue.id === current);
+        const from = at < 0 ? 0 : at;
+        return visible[(from + step + visible.length) % visible.length].id;
+      });
+    };
+
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [visible, overlayOpen, drawerOpen, settingsOpen]);
+
   if (resource.error) {
     return (
       <div className="page">
@@ -179,6 +211,8 @@ export default function ReviewDetailView({
 
   const { review, issues, passes, feedback, memory, roster, documents } = data;
   const selected = issues.find((issue) => issue.id === selectedId) ?? visible[0] ?? null;
+  const queueIndex = selected ? visible.findIndex((issue) => issue.id === selected.id) : -1;
+  const queueTo = selected ? roster.find((person) => person.id === selected.assigneeId) : undefined;
   const undecided = countUndecided(feedback);
   const nextPass = passes.filter((pass) => pass.status === 'done').length + 1;
   const failedPass = passes[passes.length - 1]?.status === 'failed' ? passes[passes.length - 1] : null;
@@ -238,7 +272,7 @@ export default function ReviewDetailView({
   return (
     <div className="review">
       <header className="review-head">
-        <div className="review-head-top">
+        <div className="review-bar">
           <div className="review-identity">
             <button className="crumb" type="button" onClick={onBack}>
               Reviews
@@ -247,6 +281,32 @@ export default function ReviewDetailView({
             <h1 className="review-title">{review.name}</h1>
             {review.status === 'closed' && <span className="tag settled">closed</span>}
           </div>
+
+          {/* Counterparty, period and documents were a whole band. They are
+              facts you check occasionally, not while deciding, so they sit
+              behind the one control that can also change them. */}
+          <button
+            className="bar-meta"
+            type="button"
+            onClick={() => setSettingsOpen(true)}
+            title={`${[review.counterparty, review.period].filter(Boolean).join(' · ')}${
+              review.counterparty || review.period ? ' · ' : ''
+            }${documents.length} ${documents.length === 1 ? 'document' : 'documents'}`}
+          >
+            <Icon name="reviews" />
+            <span className="tnum">{documents.length}</span>
+          </button>
+
+          {/* The product's only number, and the pass breakdown behind it. */}
+          <button
+            className={passOpen ? 'bar-count open' : 'bar-count'}
+            type="button"
+            aria-expanded={passOpen}
+            title={passOpen ? 'Hide what each agent reported' : 'What each agent reported'}
+            onClick={() => setPassOpen(!passOpen)}
+          >
+            <Convergence passes={review.passes} running={running} />
+          </button>
 
           <div className="review-actions">
             <button className="button" type="button" onClick={() => setDrawerOpen(true)}>
@@ -263,21 +323,6 @@ export default function ReviewDetailView({
               {running || passStarting ? 'Pass running…' : `Run pass ${nextPass}`}
             </button>
           </div>
-        </div>
-
-        <div className="review-summary">
-          <Convergence passes={review.passes} running={running} />
-          <span className="summary-sep" />
-          <p className="review-meta">
-            {[review.counterparty, review.period].filter(Boolean).join(' · ')}
-            {review.counterparty || review.period ? ' · ' : ''}
-            <button className="link" type="button" onClick={() => setSettingsOpen(true)}>
-              {documents.length} {documents.length === 1 ? 'document' : 'documents'}
-            </button>
-          </p>
-          <button className="button ghost small" type="button" onClick={() => setPassOpen(!passOpen)}>
-            {passOpen ? 'Hide panel' : 'Panel detail'}
-          </button>
         </div>
 
         {passOpen && (
@@ -330,87 +375,59 @@ export default function ReviewDetailView({
         </div>
       )}
 
-      <div className="review-toolbar">
-        <nav className="segmented" aria-label="Filter issues">
-          {FILTERS.map((entry) => (
-            <button
-              key={entry.key}
-              type="button"
-              className={filter === entry.key ? 'segment active' : 'segment'}
-              onClick={() => setFilter(entry.key)}
-            >
-              {entry.label} <span className="segment-count tnum">{counts[entry.key]}</span>
-            </button>
-          ))}
-        </nav>
-      </div>
+      {/* What a 340px list pane was doing in 22px: severity spread, how far in
+          you are, and a way back to any of them. It reads the same at four
+          issues and at fifty. */}
+      {visible.length > 0 && (
+        <div className="queue-strip">
+          <div className="queue-marks">
+            {visible.map((issue) => (
+              <button
+                key={issue.id}
+                type="button"
+                className={[
+                  'queue-mark',
+                  `sev-${issue.severity}`,
+                  issue.status === 'open' ? '' : 'done',
+                  issue.id === selected?.id ? 'current' : '',
+                ]
+                  .filter(Boolean)
+                  .join(' ')}
+                aria-label={issue.ref}
+                aria-current={issue.id === selected?.id}
+                title={`${issue.ref} · ${issue.statement}`}
+                onClick={() => setSelectedId(issue.id)}
+              />
+            ))}
+          </div>
 
-      <div className="review-panes">
-        <div className="issue-list" role="listbox" aria-label="Issues">
-          {groups.map((group) => (
-            <section key={group.key} className="issue-group">
-              <div className="issue-group-head">
-                <span className="issue-group-label">{group.label}</span>
-                {group.sub && <span className="issue-group-sub">{group.sub}</span>}
-                <span className="issue-group-count tnum">{group.issues.length}</span>
-              </div>
-
-              {group.issues.map((issue) => {
-                const tag = rowTag(issue);
-                return (
-                  <button
-                    key={issue.id}
-                    type="button"
-                    role="option"
-                    aria-selected={issue.id === selected?.id}
-                    className={issue.id === selected?.id ? 'issue-row selected' : 'issue-row'}
-                    onClick={() => setSelectedId(issue.id)}
-                  >
-                    <span className="issue-row-top">
-                      <span className={`sev sev-${issue.severity}`} />
-                      <span className="issue-ref">{issue.ref}</span>
-                      {tag && <span className={tag.className}>{tag.label}</span>}
-                      {issue.sentAt && <span className="chip">sent</span>}
-                    </span>
-                    <span className="issue-row-statement">{issue.statement}</span>
-                    <span className="issue-row-foot">
-                      {issue.location && <code>{issue.location}</code>}
-                      {issue.raisedBy.length > 1 && <span className="corroborated">corroborated</span>}
-                    </span>
-                  </button>
-                );
-              })}
-
-              {group.key !== selfId && group.key !== 'unassigned' && group.person && filter !== 'resolved' && (
-                <div className="issue-group-action">
-                  <button
-                    className="button small"
-                    type="button"
-                    onClick={() =>
-                      copy(`letter-${group.key}`, composeLetter(group.person!, review.name, group.issues))
-                    }
-                  >
-                    <Icon name="copy" />{' '}
-                    {copyLabel(
-                      `letter-${group.key}`,
-                      `Compose ${group.issues.length} into one letter`,
-                      'Letter copied',
-                    )}
-                  </button>
-                </div>
-              )}
-            </section>
-          ))}
-
-          {groups.length === 0 && (
-            <p className="empty-note">
-              {issues.length === 0
-                ? 'No issues yet. Run the first pass once the documents are in.'
-                : 'Nothing under this filter.'}
-            </p>
+          {queueIndex >= 0 && (
+            <span className="queue-pos tnum">
+              {queueIndex + 1} of {visible.length}
+            </span>
           )}
-        </div>
+          {queueTo && <span className="queue-to">to {queueTo.name}</span>}
+          {filter !== 'open' && (
+            <span className="queue-filter">
+              {FILTERS.find((entry) => entry.key === filter)?.label}
+            </span>
+          )}
 
+          <div className="queue-aside">
+            <button className="button subtle small" type="button" onClick={() => setOverlayOpen(true)}>
+              <Icon name="list" /> All issues
+            </button>
+            <span className="queue-keys" aria-hidden>
+              <kbd>↑</kbd>
+              <kbd>↓</kbd>
+            </span>
+          </div>
+        </div>
+      )}
+
+      {/* The issue is the page now. One column on the reading measure, one
+          decision in front of you, and the rest of the queue one key away. */}
+      <div className="review-stage">
         {selected ? (
           <IssueDetail
             key={selected.id}
@@ -423,9 +440,32 @@ export default function ReviewDetailView({
             act={act}
           />
         ) : (
-          <div className="issue-detail empty" />
+          <p className="empty-note">
+            {issues.length === 0
+              ? 'No issues yet. Run the first pass once the documents are in.'
+              : 'Nothing under this filter.'}
+          </p>
         )}
       </div>
+
+      {overlayOpen && (
+        <QueueOverlay
+          groups={groups}
+          filter={filter}
+          counts={counts}
+          selfId={selfId}
+          selectedId={selected?.id ?? ''}
+          reviewName={review.name}
+          copyLabel={copyLabel}
+          copy={copy}
+          onFilter={setFilter}
+          onSelect={(id) => {
+            setSelectedId(id);
+            setOverlayOpen(false);
+          }}
+          onClose={() => setOverlayOpen(false)}
+        />
+      )}
 
       {drawerOpen && (
         <FeedbackDrawer
@@ -1176,6 +1216,124 @@ function ReviewSettings({
         </div>
       </div>
     </Modal>
+  );
+}
+
+/* ── The whole queue, on demand ─────────────────────────────────────────────
+   The queue moves you through one decision at a time, which costs you the
+   glance across all of them. This is that glance, and the only place the
+   filters live: scanning and filtering are the same act, and neither belongs
+   in the way while you are deciding. */
+
+function QueueOverlay({
+  groups,
+  filter,
+  counts,
+  selfId,
+  selectedId,
+  reviewName,
+  copyLabel,
+  copy,
+  onFilter,
+  onSelect,
+  onClose,
+}: {
+  groups: { key: string; person?: RosterEntry; label: string; sub: string; issues: Issue[] }[];
+  filter: FilterKey;
+  counts: Record<FilterKey, number>;
+  selfId: string;
+  selectedId: string;
+  reviewName: string;
+  copyLabel: CopyLabel;
+  copy: (key: string, text: string) => void;
+  onFilter: (key: FilterKey) => void;
+  onSelect: (id: string) => void;
+  onClose: () => void;
+}) {
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') onClose();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onClose]);
+
+  return (
+    <>
+      <div className="scrim" onClick={onClose} />
+      <div className="queue-overlay" role="dialog" aria-label="All issues" aria-modal="true">
+        <header className="queue-overlay-head">
+          <nav className="segmented" aria-label="Filter issues">
+            {FILTERS.map((entry) => (
+              <button
+                key={entry.key}
+                type="button"
+                className={filter === entry.key ? 'segment active' : 'segment'}
+                onClick={() => onFilter(entry.key)}
+              >
+                {entry.label} <span className="segment-count tnum">{counts[entry.key]}</span>
+              </button>
+            ))}
+          </nav>
+          <button className="icon-button" type="button" title="Close" aria-label="Close" onClick={onClose}>
+            <Icon name="x" />
+          </button>
+        </header>
+
+        <div className="queue-overlay-body" role="listbox" aria-label="Issues">
+          {groups.map((group) => (
+            <section key={group.key} className="issue-group">
+              <div className="issue-group-head">
+                <span className="issue-group-label">{group.label}</span>
+                {group.sub && <span className="issue-group-sub">{group.sub}</span>}
+                <span className="issue-group-count tnum">{group.issues.length}</span>
+              </div>
+
+              {group.issues.map((issue) => {
+                const tag = rowTag(issue);
+                return (
+                  <button
+                    key={issue.id}
+                    type="button"
+                    role="option"
+                    aria-selected={issue.id === selectedId}
+                    className={issue.id === selectedId ? 'issue-row selected' : 'issue-row'}
+                    onClick={() => onSelect(issue.id)}
+                  >
+                    <span className="issue-row-top">
+                      <span className={`sev sev-${issue.severity}`} />
+                      <span className="issue-ref">{issue.ref}</span>
+                      {tag && <span className={tag.className}>{tag.label}</span>}
+                      {issue.sentAt && <span className="chip">sent</span>}
+                    </span>
+                    <span className="issue-row-statement">{issue.statement}</span>
+                    <span className="issue-row-foot">
+                      {issue.location && <code>{issue.location}</code>}
+                      {issue.raisedBy.length > 1 && <span className="corroborated">corroborated</span>}
+                    </span>
+                  </button>
+                );
+              })}
+
+              {group.key !== selfId && group.key !== 'unassigned' && group.person && filter !== 'resolved' && (
+                <div className="issue-group-action">
+                  <button
+                    className="button small"
+                    type="button"
+                    onClick={() => copy(`letter-${group.key}`, composeLetter(group.person!, reviewName, group.issues))}
+                  >
+                    <Icon name="copy" />{' '}
+                    {copyLabel(`letter-${group.key}`, `Compose ${group.issues.length} into one letter`, 'Letter copied')}
+                  </button>
+                </div>
+              )}
+            </section>
+          ))}
+
+          {groups.length === 0 && <p className="empty-note">Nothing under this filter.</p>}
+        </div>
+      </div>
+    </>
   );
 }
 
