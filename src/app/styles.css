@@ -910,17 +910,30 @@ p { margin: 0; }
   font: 400 11px/1.6 var(--font-sans); white-space: nowrap;
 }
 
-.queue-aside { display: flex; align-items: center; gap: var(--space-xs); margin-left: auto; }
-.queue-keys { display: flex; gap: 3px; }
+.queue-aside { display: flex; align-items: center; gap: var(--space-sm); margin-left: auto; }
+.queue-steps { display: flex; gap: 3px; }
 
-kbd {
+/* Keycap-shaped, because the key is half of what it is telling you: these two
+   move the queue, and so do ← and →. They were <kbd> hints in this exact place
+   and at this exact size, which made them a stepper that ignored the mouse. */
+.queue-step {
   display: inline-flex; align-items: center; justify-content: center;
-  min-width: 18px; height: 18px; padding: 0 4px;
+  min-width: 22px; height: 22px; padding: 0 4px;
   border: 1px solid var(--hairline); border-bottom-width: 2px;
   border-radius: var(--rounded-xs);
   background: var(--canvas); color: var(--stone);
-  font: 500 10px/1 var(--font-mono);
+  font: 500 11px/1 var(--font-mono); cursor: pointer;
+  transition: background var(--motion), border-color var(--motion), color var(--motion);
 }
+.queue-step:hover { border-color: var(--steel); background: var(--surface); color: var(--ink); }
+/* Pressed: the keycap goes down, and takes its own shadow edge with it. */
+.queue-step:active { border-bottom-width: 1px; transform: translateY(1px); }
+
+/* The trigger reads as what it is once it can be open: a chevron, and the
+   pressed-in look held for as long as the panel under it is showing. */
+.queue-open .icon:last-child { color: var(--stone); transition: transform var(--motion); }
+.queue-open[aria-expanded='true'] { background: var(--surface); color: var(--ink); }
+.queue-open[aria-expanded='true'] .icon:last-child { transform: rotate(180deg); }
 
 /* ── The stage ──────────────────────────────────────────────────────────────
    One issue, one column, one decision. */
@@ -929,29 +942,45 @@ kbd {
 
 /* ── The whole queue, on demand ─────────────────────────────────────────────
    The glance the queue costs you, given back as a layer rather than a pane
-   that is present whether or not you are using it. */
+   that is present whether or not you are using it.
 
-.queue-overlay {
-  position: fixed; top: 0; left: 0; bottom: 0; z-index: 31;
+   It hangs off the button that opens it. Pinned to the left edge instead, it
+   covered the workspace rail and read as the navigation unfolding — the width
+   of a nav, the height of a nav, on the side the nav is on. Placement is set
+   from the trigger in JS (see QueueMenu); what is here is the surface. */
+
+.queue-menu {
+  position: fixed; z-index: 41;
   display: flex; flex-direction: column;
-  width: min(460px, 100vw);
+  width: min(460px, calc(100vw - 24px));
+  border: 1px solid var(--hairline); border-radius: var(--rounded-lg);
   background: var(--canvas);
-  border-right: 1px solid var(--hairline);
   box-shadow: var(--elev-3);
-  /* Focused on open so the keyboard has somewhere to be. Its arrival is the
-     ring; a second one drawn around the whole panel says nothing. */
+  /* The body scrolls, so the corners have to clip it or the radius is a lie. */
+  overflow: hidden;
+  /* The sheet is focused on open so the keyboard has somewhere to be. Its
+     arrival is the ring; a second one around the whole panel says nothing. */
   outline: none;
 }
 
-.queue-overlay-head {
+.queue-menu-head {
   display: flex; align-items: flex-end; gap: var(--space-md);
   flex: none;
-  padding: var(--space-md) var(--space-sm) 0 var(--space-lg);
+  padding: var(--space-sm) var(--space-sm) 0 var(--space-lg);
   border-bottom: 1px solid var(--hairline);
 }
-.queue-overlay-head .icon-button { margin-bottom: var(--space-xs); }
+.queue-menu-head .icon-button { margin-bottom: var(--space-xs); }
 
-.queue-overlay-body { flex: 1; min-height: 0; overflow-y: auto; padding-bottom: var(--space-xxl); }
+.queue-menu-body { flex: 1; min-height: 0; overflow-y: auto; padding-bottom: var(--space-sm); }
+
+/* On a phone a 460px panel cannot hang off a button, so it stops pretending to
+   and takes the bottom edge — the same shape the dialogs take down here. */
+.queue-menu.sheet {
+  top: auto; right: 0; bottom: 0; left: 0;
+  width: 100%; max-height: 82dvh;
+  border-inline: 0; border-bottom: 0;
+  border-radius: var(--rounded-lg) var(--rounded-lg) 0 0;
+}
 
 .segmented { display: flex; gap: var(--space-xs); overflow-x: auto; scrollbar-width: none; }
 .segmented::-webkit-scrollbar { display: none; }
@@ -1931,9 +1960,11 @@ input:focus-visible, textarea:focus-visible, select:focus-visible {
   .review-actions { margin-left: auto; }
   .review-bar, .queue-strip, .panel-strip { padding-inline: var(--space-lg); }
   .blocked-note { padding-inline: var(--space-lg); }
-  .queue-to, .queue-keys { display: none; }
+  /* The keycaps go with the keyboard they name: at this width the strip needs
+     its room for the marks, and a device without arrow keys has the marks and
+     the panel to get back with. */
+  .queue-to, .queue-steps { display: none; }
   .issue-detail { padding-inline: var(--space-lg); }
-  .queue-overlay { width: min(460px, 100vw); }
 
   /* ── Tables lose their columns ──────────────────────────────────────────
      Four columns at this width compress every cell to a word. Each row
@@ -2128,10 +2159,9 @@ input:focus-visible, textarea:focus-visible, select:focus-visible {
   .queue-mark { width: 11px; }
   .queue-mark.current { height: 22px; }
 
-  .queue-overlay { width: 100vw; border-right: 0; }
-  .queue-overlay-body { padding-bottom: calc(var(--space-xxl) + env(safe-area-inset-bottom)); }
+  .queue-menu-body { padding-bottom: calc(var(--space-sm) + env(safe-area-inset-bottom)); }
   .issue-row, .issue-group-head, .issue-group-action { padding-inline: var(--space-md); }
-  .queue-overlay-head { padding: var(--space-sm) var(--space-xs) 0 var(--space-md); }
+  .queue-menu-head { padding: var(--space-sm) var(--space-xs) 0 var(--space-md); }
   /* The filters scroll sideways. A segment cut flush against the close button
      reads as clipped; ending the run short of it reads as more to come. */
   .segmented { padding-right: var(--space-xs); }
