@@ -185,18 +185,18 @@ describe('consumeA2AStream, when the stream dies mid-turn', () => {
     vi.unstubAllGlobals();
   });
 
-  const run = (resume: boolean) =>
+  const run = (remaining: number | null) =>
     consumeA2AStream({
       cred,
       params: { message: { kind: 'message', role: 'user', parts: [] } },
       signal: new AbortController().signal,
-      resume,
+      resume: remaining === null ? undefined : { remaining },
     });
 
   it('collects the answer with tasks/get instead of resending the turn', async () => {
     const { methods } = stubFetch([sseResponse([WORKING], true), jsonResponse(FINISHED_TASK)]);
 
-    const snapshot = await run(true);
+    const snapshot = await run(4);
 
     expect(snapshot.text).toBe('{"findings":[]}');
     expect(snapshot.terminal).toBe(true);
@@ -206,7 +206,7 @@ describe('consumeA2AStream, when the stream dies mid-turn', () => {
 
   it('follows a stream that ends early without a verdict', async () => {
     const { methods } = stubFetch([sseResponse([WORKING], false), jsonResponse(FINISHED_TASK)]);
-    const snapshot = await run(true);
+    const snapshot = await run(4);
     expect(snapshot.text).toBe('{"findings":[]}');
     expect(methods).toEqual(['message/stream', 'tasks/get']);
   });
@@ -216,18 +216,75 @@ describe('consumeA2AStream, when the stream dies mid-turn', () => {
       sseResponse([WORKING], true),
       jsonResponse({ jsonrpc: '2.0', id: '2', error: { code: -32001, message: 'no such task' } }),
     ]);
-    await expect(run(true)).rejects.toThrow('Network connection lost.');
+    await expect(run(4)).rejects.toThrow('Network connection lost.');
   });
 
   it('fails fast without resume, and asks nothing further', async () => {
     const { methods } = stubFetch([sseResponse([WORKING], true)]);
-    await expect(run(false)).rejects.toThrow('Network connection lost.');
+    await expect(run(null)).rejects.toThrow('Network connection lost.');
     expect(methods).toEqual(['message/stream']);
   });
 
   it('cannot follow a stream that died before naming its task', async () => {
     const { methods } = stubFetch([sseResponse([], true)]);
-    await expect(run(true)).rejects.toThrow(A2AError);
+    await expect(run(4)).rejects.toThrow(A2AError);
     expect(methods).toEqual(['message/stream']);
+  });
+
+  it('spends no more than the budget allows, and hands back what is left', async () => {
+    vi.useFakeTimers();
+    try {
+      const working = { jsonrpc: '2.0', id: '2', result: { kind: 'task', id: 't1', status: { state: 'working' } } };
+      // Far more answers than the budget can pay for: a task that never settles is
+      // exactly the shape that spent a whole invocation's subrequests in production.
+      const { methods } = stubFetch([
+        sseResponse([WORKING], true),
+        ...Array.from({ length: 20 }, () => jsonResponse(working)),
+      ]);
+      const budget = { remaining: 3 };
+      const turn = consumeA2AStream({
+        cred,
+        params: { message: { kind: 'message', role: 'user', parts: [] } },
+        signal: new AbortController().signal,
+        resume: budget,
+      });
+      const settled = expect(turn).rejects.toThrow('Network connection lost.');
+      await vi.advanceTimersByTimeAsync(10 * 60_000);
+      await settled;
+
+      expect(methods.filter((method) => method === 'tasks/get')).toHaveLength(3);
+      expect(budget.remaining).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('shares one budget across every turn that draws on it', async () => {
+    vi.useFakeTimers();
+    try {
+      const budget = { remaining: 2 };
+      const turn = (responses: Response[]) => {
+        stubFetch(responses);
+        return consumeA2AStream({
+          cred,
+          params: { message: { kind: 'message', role: 'user', parts: [] } },
+          signal: new AbortController().signal,
+          resume: budget,
+        });
+      };
+
+      const first = turn([sseResponse([WORKING], true), jsonResponse(FINISHED_TASK)]);
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect((await first).text).toBe('{"findings":[]}');
+      expect(budget.remaining).toBe(1);
+
+      // The second reviewer inherits what the first left, not a fresh allowance.
+      const second = turn([sseResponse([WORKING], true), jsonResponse(FINISHED_TASK)]);
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect((await second).text).toBe('{"findings":[]}');
+      expect(budget.remaining).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

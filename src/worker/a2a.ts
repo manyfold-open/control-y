@@ -18,8 +18,21 @@ import type { AgentCredential } from './types';
 const PROBE_TIMEOUT_MS = 20_000;
 const CARD_TIMEOUT_MS = 10_000;
 const TASK_TIMEOUT_MS = 20_000;
-/** How often a turn that lost its stream asks after the task it was watching. */
-const TASK_POLL_MS = 5_000;
+/**
+ * How long a turn that lost its stream waits before asking after the task, and the
+ * ceiling that wait backs off to.
+ *
+ * A poll is a subrequest, and subrequests are the scarce resource in a pass: the
+ * whole run is one Worker invocation, and MEASURED on 6 Sept 2026 a flat 5s poll
+ * across five dropped reviewers spent the invocation's entire allowance in under
+ * four minutes. The consolidator was then refused its own turn and the pass died
+ * with "Too many subrequests by single Worker invocation" having written nothing.
+ *
+ * Backing off costs almost nothing: an agent that has been thinking for three
+ * minutes is not going to mind being asked a minute apart.
+ */
+const TASK_POLL_MS = 10_000;
+const TASK_POLL_MAX_MS = 60_000;
 const ERROR_TEXT_LIMIT = 600;
 
 export class A2AError extends Error {
@@ -336,10 +349,23 @@ export interface StreamOptions {
    */
   idleMs?: number;
   /**
-   * Follow the task by polling when the stream dies under it. Off by default,
-   * because a caller that has nowhere to put a late answer should fail fast.
+   * Follow the task by polling when the stream dies under it, spending from this
+   * allowance. Absent by default, because a caller that has nowhere to put a late
+   * answer should fail fast.
    */
-  resume?: boolean;
+  resume?: ResumeBudget;
+}
+
+/**
+ * What recovery is allowed to spend, shared across every turn that draws on it.
+ *
+ * It has to be shared, and it has to be counted. A pass is one Worker invocation
+ * with one subrequest allowance, and five reviewers each politely following their
+ * own lost task will exhaust it between them and leave nothing for the
+ * consolidator, which is the one turn the pass cannot do without.
+ */
+export interface ResumeBudget {
+  remaining: number;
 }
 
 /**
@@ -387,10 +413,13 @@ async function followTask(
   cause: A2AError | null,
 ): Promise<StreamSnapshot> {
   const { cred, signal } = options;
+  const budget = options.resume;
   const taskId = accumulator.taskId;
   if (!taskId) throw cause ?? new A2AError(`${cred.label} stream ended without a task.`, true);
 
-  while (!signal.aborted) {
+  let wait = TASK_POLL_MS;
+  while (!signal.aborted && (budget?.remaining ?? 0) > 0) {
+    budget!.remaining -= 1;
     let response: Response;
     try {
       response = await fetchTimeout(
@@ -414,7 +443,8 @@ async function followTask(
     const snapshot = snapshotFrom(accumulator);
     await options.onSnapshot?.(snapshot);
     if (snapshot.terminal) return snapshot;
-    await sleep(TASK_POLL_MS, signal);
+    await sleep(wait, signal);
+    wait = Math.min(wait * 2, TASK_POLL_MAX_MS);
   }
   throw cause ?? new A2AError(`${cred.label} stream timed out.`, true);
 }

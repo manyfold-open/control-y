@@ -31,7 +31,7 @@ import type {
 import { evidenceText, readEvidence } from '../shared/evidence';
 import { MEMORY_KINDS } from '../shared/types';
 import { HttpError, type AgentCredential, type Env } from './types';
-import { A2AError, consumeA2AStream, safeErrorText } from './a2a';
+import { A2AError, consumeA2AStream, safeErrorText, type ResumeBudget } from './a2a';
 import { credentialFor, listConnectedAgents } from './connect';
 import { presignFetch } from './r2';
 import { now } from './db';
@@ -78,6 +78,22 @@ const PROGRESS_NOTE_CHARS = 200;
 const DOC_CHARS_EACH = 24_000;
 const DOC_CHARS_TOTAL = 60_000;
 const MAX_ISSUES_PER_PASS = 200;
+
+/**
+ * Extra requests the whole pass may spend chasing turns whose streams broke.
+ *
+ * A pass is one Worker invocation, and the invocation's subrequest allowance is the
+ * scarce resource in it. MEASURED, 6 Sept 2026: two passes running side by side
+ * were both refused after about 210 seconds of three reviewers polling every five
+ * seconds, which puts the ceiling in the tens of fetches, not the hundreds. Note
+ * what was refused — not a reviewer, but the consolidator, the one turn a pass
+ * cannot finish without. Both passes wrote nothing.
+ *
+ * So recovery gets a fixed allowance for the whole run, and the six turns that a
+ * pass needs are never inside it. With the backoff in a2a.ts this pays for roughly
+ * three reviewers followed for five minutes each, which is the case it exists for.
+ */
+const RESUME_BUDGET = 24;
 
 /* ───────── one A2A turn ───────── */
 
@@ -216,6 +232,7 @@ async function ask(
   options: {
     attachments?: Attachment[];
     onProgress?: (update: { state: string; note: string }) => Promise<void> | void;
+    resume?: ResumeBudget;
   } = {},
 ): Promise<string> {
   const { attachments = [], onProgress } = options;
@@ -258,7 +275,7 @@ async function ask(
       // already been paid for and the pass is going to wait for the other
       // reviewers regardless, so a lost socket should cost a poll, not the
       // reviewer. See consumeA2AStream.
-      resume: true,
+      resume: options.resume,
     });
     const text = snapshot.text.trim();
     if (!text) throw new A2AError(`${cred.label} answered with no text.`, true);
@@ -746,6 +763,8 @@ async function runPass(
 
   await emit({ type: 'stage', stage: 'reviewers', done: 0, total: enabled.length });
   let answered = 0;
+  // One allowance, drawn on by every turn below, reviewers and consolidator alike.
+  const resume: ResumeBudget = { remaining: RESUME_BUDGET };
 
   const results = await mapLimit(enabled, AGENT_CONCURRENCY, async (agent) => {
     // Reported the moment the agent lands, whichever way it went: a reviewer that
@@ -768,6 +787,7 @@ async function runPass(
       const reply = await ask(cred, buildAgentPrompt(agent.prompt, ctx), {
         attachments,
         onProgress: (update) => progress(update.state, update.note),
+        resume,
       });
       const payload = parsePayload<{ findings?: unknown }>(reply);
       const raw = Array.isArray(payload?.findings) ? payload.findings : null;
@@ -846,62 +866,73 @@ async function runPass(
 
   await emit({ type: 'stage', stage: 'consolidator', done: 0, total: 1 });
 
-  const consolidatorCred = await credentialOf(consolidator);
-  const consolidatorProgress = (state: string, note = '') =>
-    emit({ type: 'progress', key: consolidator.key, name: consolidator.name, state, note });
-  await consolidatorProgress('submitted');
-  const reply = await ask(
-    consolidatorCred,
-    buildConsolidatorPrompt(consolidator.prompt, ctx, rosterBlock, findingsBlock),
-    { onProgress: (update) => consolidatorProgress(update.state, update.note) },
-  );
-  const payload = parsePayload<{ issues?: unknown }>(reply);
-  if (!Array.isArray(payload?.issues)) {
-    const message = 'The consolidator did not return an issue list. No issue was changed.';
+  // From here on, a failure is reported with `agentResults` rather than thrown.
+  // Everything above it is the reviewers' work, and it exists nowhere but this
+  // variable until the row is written: a consolidator that cannot be reached used
+  // to take five reviewers' results down with it, leaving a pass row that said
+  // only that something went wrong and a strip that named nobody.
+  try {
+    const consolidatorCred = await credentialOf(consolidator);
+    const consolidatorProgress = (state: string, note = '') =>
+      emit({ type: 'progress', key: consolidator.key, name: consolidator.name, state, note });
+    await consolidatorProgress('submitted');
+    const reply = await ask(
+      consolidatorCred,
+      buildConsolidatorPrompt(consolidator.prompt, ctx, rosterBlock, findingsBlock),
+      { onProgress: (update) => consolidatorProgress(update.state, update.note), resume },
+    );
+    const payload = parsePayload<{ issues?: unknown }>(reply);
+    if (!Array.isArray(payload?.issues)) {
+      const message = 'The consolidator did not return an issue list. No issue was changed.';
+      await finish(env, passId, 'failed', null, message, agentResults);
+      await emit({ type: 'error', message });
+      return;
+    }
+
+    const writes = consolidateIssues(payload.issues, {
+      existing: issues,
+      personIds: roster.map((person) => person.id),
+      memoryIds: memory.map((entry) => entry.id),
+      agentNames: agents.map((agent) => agent.name),
+    });
+
+    if (writes.length > 0) {
+      await env.DB.batch(writes.map((issue) => upsertIssueStatement(env, reviewId, issue)));
+    }
+    // Replies folded into this pass stop being pending work. A batch the panel
+    // could not read is left alone: it holds nothing, and the user decides whether
+    // to paste it again or discard it.
+    const folded = feedback.filter((batch) => batch.status === 'ready');
+    if (folded.length > 0) {
+      await env.DB.batch(
+        folded.map((batch) =>
+          env.DB.prepare('UPDATE feedback_batches SET applied_at = ? WHERE id = ?').bind(now(), batch.id),
+        ),
+      );
+    }
+    await env.DB.prepare('UPDATE reviews SET updated_at = ? WHERE id = ?').bind(now(), reviewId).run();
+
+    const open = await env.DB.prepare(
+      "SELECT COUNT(*) AS n FROM issues WHERE review_id = ? AND status = 'open'",
+    )
+      .bind(reviewId)
+      .first<{ n: number }>();
+
+    await finish(
+      env,
+      passId,
+      'done',
+      open?.n ?? 0,
+      null,
+      agentResults,
+      writes.filter((issue) => issue.memory).length,
+    );
+    await emit({ type: 'done', openCount: open?.n ?? 0 });
+  } catch (error) {
+    const message = safeErrorText(error instanceof Error ? error.message : error);
     await finish(env, passId, 'failed', null, message, agentResults);
     await emit({ type: 'error', message });
-    return;
   }
-
-  const writes = consolidateIssues(payload.issues, {
-    existing: issues,
-    personIds: roster.map((person) => person.id),
-    memoryIds: memory.map((entry) => entry.id),
-    agentNames: agents.map((agent) => agent.name),
-  });
-
-  if (writes.length > 0) {
-    await env.DB.batch(writes.map((issue) => upsertIssueStatement(env, reviewId, issue)));
-  }
-  // Replies folded into this pass stop being pending work. A batch the panel
-  // could not read is left alone: it holds nothing, and the user decides whether
-  // to paste it again or discard it.
-  const folded = feedback.filter((batch) => batch.status === 'ready');
-  if (folded.length > 0) {
-    await env.DB.batch(
-      folded.map((batch) =>
-        env.DB.prepare('UPDATE feedback_batches SET applied_at = ? WHERE id = ?').bind(now(), batch.id),
-      ),
-    );
-  }
-  await env.DB.prepare('UPDATE reviews SET updated_at = ? WHERE id = ?').bind(now(), reviewId).run();
-
-  const open = await env.DB.prepare(
-    "SELECT COUNT(*) AS n FROM issues WHERE review_id = ? AND status = 'open'",
-  )
-    .bind(reviewId)
-    .first<{ n: number }>();
-
-  await finish(
-    env,
-    passId,
-    'done',
-    open?.n ?? 0,
-    null,
-    agentResults,
-    writes.filter((issue) => issue.memory).length,
-  );
-  await emit({ type: 'done', openCount: open?.n ?? 0 });
 }
 
 /* ───────── the retrospective ───────── */
